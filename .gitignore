@@ -1,0 +1,11 @@
+.gradle/
+build/
+*.apk
+*.aab
+*.jks
+*.jks
+*.keystore
+local.properties
+*.pak
+*.ipa
+isaac.arm64
