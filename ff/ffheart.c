@@ -47,21 +47,37 @@
  * it with an "over" row), and the art sits in assets/fiendfolio/gfx/items/pick ups/ with a "file" row each.
  * Without them the replacements cannot be made and a converted heart would not look like anything.
  *
- * THE HEALTH BAR (stage 2c): the game builds the row of hearts it draws as a table of slots, 0x18 bytes
- * each, in the function at 0x6e45d8(layout, slots, count, player) - read in the image: at +0x08 of a slot
- * sits the pointer to the NAME of the animation to play, and for a black heart it is the literal
- * "BlackHeartFull" (0xa5aabe) or "BlackHeartHalf" (0xa5aaaf). After the game has built the table for a
- * Fiend, every slot that names one of those two gets "ImmoralHeartFull" / "ImmoralHeartHalf" instead.
- * Those animations are not in the game's ui_hearts.anm2: they are ADDED to it by an anm2 patch of the
- * port (portpatch.c) with the sheet ui_fiendish_heart.png - see hud-immoral/ and its LEEME. If that patch
- * is not in the build, the animation does not exist and the hearts of a Fiend are drawn empty.
- * (Other places that name the black heart - the pause screen, the stats - are not touched.)
+ * THE IMMORAL HEART AS A KIND OF HEALTH OF ITS OWN (stage 2c) - for EVERY character, not for Fiend only.
+ * Under the hood it is a soul-type heart (that is how the mod's CustomHealthAPI builds it too: RegisterSoulHealth),
+ * so the game's own rules - the order hearts are lost in, the 12 of them at most, the pickup's reach - apply. What
+ * makes it its own kind is a MASK THE GAME DOES NOT HAVE: one bit per whole soul heart, kept here per player
+ * (g_pl), parallel to the game's own black mask (+0x16c8). A soul heart is then one of three: blue (neither bit),
+ * black (the game's bit) or immoral (ours). Every change of soul health goes through AddSoulHearts (a hit too: the
+ * game takes the LAST halves, whatever their colour), so keeping the mask is mirroring that one function:
+ *   - a gain made while an Immoral Heart pickup is collected (g_immoral) marks the hearts it creates immoral; any
+ *     other gain marks them not immoral; a half that only completes the last heart leaves its kind as it was;
+ *   - a loss clears the bits of the hearts that are gone; no soul halves at all clears the mask.
+ * The mask is also trimmed to the hearts that exist whenever the bar is drawn, so a path that writes the game's
+ * counters without this function (a character swap, a new run) cannot leave a heart marked that is not there.
+ * KNOWN LIMIT: the mask lives in this process, not in the save: a Continue turns immoral hearts into blue ones.
+ *
+ * FIEND'S OWN RULES on top (fiend.lua): a direct soul heart or a container is BLACK; he starts with two black
+ * hearts (players.xml black="4") and ONE immoral heart (AddImmoralHearts(player, 2): two halves - one heart): given
+ * by w_black the first time a Fiend with no soul hearts is handed those four black halves.
+ *
+ * THE HEALTH BAR: the game builds the row of hearts it draws as a table of slots, 0x18 bytes each, in the function
+ * at 0x6e45d8(layout, slots, count, player) - read in the image: one slot per heart in order; the soul-type slots
+ * name their animation at +0x08, "BlueHeartFull" (0xa5aadb) / "BlueHeartHalf" (0xa5aacd) for a blue one and
+ * "BlackHeartFull" / "BlackHeartHalf" for a black one. After the game has built the table, the n-th soul-type slot
+ * of any player whose mask has bit n gets "ImmoralHeartFull" / "ImmoralHeartHalf". Those animations are not in the
+ * game's ui_hearts.anm2: an anm2 patch of the port (portpatch.c) ADDS them with the sheet ui_fiendish_heart.png
+ * (integrar_ff.sh). If it is not in the build the animation does not exist and immoral hearts are drawn empty.
  *
  * LEFT AS THE GAME DOES IT (on purpose): bone hearts when collected (the mod: bone orbitals), eternal,
  * golden and rotten hearts when added directly; the rooms where the mod does not convert (a Super Secret
  * Room with the Angel backdrop, RoomForcesSoulHeart).
  *
- * NOT HERE: the immoral heart as a health TYPE (it is a black heart for the game), the minions made from
+ * NOT HERE: immoral hearts appearing as ordinary drops for every character (the drop table), the mask in the save, the minions made from
  * the immoral hearts a hit takes, the three orbiting fireballs, crits, bone orbitals, the pickup sounds.
  *
  * The page holding the copied starts of the eight functions is made executable in one go; if ANY of the
@@ -82,6 +98,11 @@
 void shim_hook(void *at, void *to);
 
 #define PLAYER_TYPE   0x1738
+#define P_SOUL        0x16c4                /* soul-type halves, black ones inside */
+#define STR_BLUE_HALF 0xa5aacd              /* "BlueHeartHalf" in the image: a plain soul heart */
+#define STR_BLUE_FULL 0xa5aadb              /* "BlueHeartFull" */
+#define STR_BLACK_HALF 0xa5aaaf             /* "BlackHeartHalf" */
+#define STR_BLACK_FULL 0xa5aabe             /* "BlackHeartFull" */
 #define FF_FIEND_TYPE 41
 
 #define GAME_PTR          0xac3b90          /* base + this: the pointer to Game (spawner.c) */
@@ -119,6 +140,33 @@ typedef void (*fn_piii)(unsigned long, int, int);
 static fn_piii o_max, o_red;
 static fn_pii  o_soul, o_black, o_bone;
 static int g_conv;                          /* > 0 while inside a conversion or an adder that calls AddSoulHearts */
+static int g_immoral;                       /* > 0 while an Immoral Heart pickup is being collected */
+
+/* the immoral mask of each player: one bit per whole soul heart, in the order of the hearts */
+#define MAX_PL 8
+static struct { unsigned long p; unsigned mask; } g_pl[MAX_PL];
+
+static unsigned *imm_slot(unsigned long p) {
+    int free = -1;
+    for (int i = 0; i < MAX_PL; i++) {
+        if (g_pl[i].p == p) return &g_pl[i].mask;
+        if (!g_pl[i].p && free < 0) free = i;
+    }
+    int i = free >= 0 ? free : 0;                       /* a ninth player does not exist; never overrun */
+    g_pl[i].p = p; g_pl[i].mask = 0;
+    return &g_pl[i].mask;
+}
+static int soul_halves(unsigned long p) { int h = *(const int *) (p + P_SOUL); return h < 0 ? 0 : h; }
+static unsigned keep_hearts(unsigned m, int hearts) { return hearts >= 32 ? m : hearts <= 0 ? 0 : (m & ((1u << hearts) - 1u)); }
+
+/* mirrors one AddSoulHearts: `immoral` says whether a GAIN was an immoral heart */
+static void imm_after(unsigned long p, int before, int after, int immoral) {
+    unsigned *m = imm_slot(p);
+    int hb = (before + 1) / 2, ha = (after + 1) / 2;
+    if (after <= 0) { *m = 0; return; }
+    if (after < before) { *m = keep_hearts(*m, ha); return; }
+    for (int i = hb; i < ha && i < 32; i++) { if (immoral) *m |= 1u << i; else *m &= ~(1u << i); }
+}
 
 static int is_fiend(unsigned long p) { return *(const int *) (p + PLAYER_TYPE) == FF_FIEND_TYPE; }
 
@@ -140,14 +188,20 @@ static void w_red(unsigned long p, int halves, int flag) {
 }
 
 static void w_soul(unsigned long p, int halves) {
-    if (halves > 0 && !g_conv && is_fiend(p)) { as_black(p, halves); return; }
+    /* a Fiend's direct soul heart is black (his rule); an immoral pickup being collected is the one thing that is not */
+    if (halves > 0 && !g_conv && !g_immoral && is_fiend(p)) { as_black(p, halves); return; }
+    int before = soul_halves(p);
     o_soul(p, halves);
+    imm_after(p, before, soul_halves(p), g_immoral > 0 && halves > 0);
 }
 
 static void w_black(unsigned long p, int halves) {          /* calls AddSoulHearts inside */
+    int before = soul_halves(p);
     g_conv++;
     o_black(p, halves);
     g_conv--;
+    /* the run's start for a Fiend: his two black hearts are in, and ONE immoral heart (two halves) follows them */
+    if (halves == 4 && before == 0 && is_fiend(p)) { g_immoral++; w_soul(p, 2); g_immoral--; }
 }
 
 static void w_bone(unsigned long p, int wholes) {           /* calls AddSoulHearts inside */
@@ -254,9 +308,12 @@ static int w_collide(unsigned long pk, unsigned long other, int low) {
     int sub = soul_form(variant);
     if (!sub || *(const int *) (other + E_TYPE) != 1 /* the player: type 1 */) return o_collide(pk, other, low);
     int was = *(const int *) (pk + E_SUBTYPE);
+    int immoral = variant == V_IMMORAL || variant == V_HALF_IMMORAL || variant == V_BLENDED_IMMORAL;
     *(int *) (pk + E_VARIANT) = V_HEART;
     *(int *) (pk + E_SUBTYPE) = sub;
+    if (immoral) g_immoral++;
     int r = o_collide(pk, other, low);
+    if (immoral) g_immoral--;
     if (!*(const unsigned char *) (pk + E_DEAD)) {          /* not taken: it is what it was */
         *(int *) (pk + E_VARIANT) = variant;
         *(int *) (pk + E_SUBTYPE) = was;
@@ -267,8 +324,6 @@ static int w_collide(unsigned long pk, unsigned long other, int low) {
 /* ------------------------------------------------------------------------------ the health bar (2c) */
 #define LAYOUT_SLOT_BYTES   0x18
 #define LAYOUT_SLOT_NAME    0x08
-#define STR_BLACK_HALF      0xa5aaaf        /* "BlackHeartHalf" in the image */
-#define STR_BLACK_FULL      0xa5aabe        /* "BlackHeartFull" */
 typedef void (*fn_layout)(unsigned long, unsigned char *, int, unsigned long);
 static fn_layout o_layout;
 static const char NAME_IMMORAL_FULL[] = "ImmoralHeartFull";
@@ -276,12 +331,19 @@ static const char NAME_IMMORAL_HALF[] = "ImmoralHeartHalf";
 
 static void w_layout(unsigned long layout, unsigned char *slots, int count, unsigned long player) {
     o_layout(layout, slots, count, player);
-    if (!slots || count <= 0 || count > 64 || !g_base || !is_fiend(player)) return;
-    const char *bh = (const char *) (g_base + STR_BLACK_HALF), *bf = (const char *) (g_base + STR_BLACK_FULL);
-    for (int k = 0; k < count; k++) {
-        const char **name = (const char **) (slots + (unsigned long) k * LAYOUT_SLOT_BYTES + LAYOUT_SLOT_NAME);
-        if (*name == bf)      *name = NAME_IMMORAL_FULL;
-        else if (*name == bh) *name = NAME_IMMORAL_HALF;
+    if (!slots || count <= 0 || count > 64 || !g_base) return;
+    unsigned *mp = imm_slot(player);
+    *mp = keep_hearts(*mp, (soul_halves(player) + 1) / 2);  /* only the hearts that are there */
+    if (!*mp) return;
+    const char *bh = (const char *) (g_base + STR_BLUE_HALF), *bf = (const char *) (g_base + STR_BLUE_FULL);
+    const char *kh = (const char *) (g_base + STR_BLACK_HALF), *kf = (const char *) (g_base + STR_BLACK_FULL);
+    int k = 0;                                              /* the soul-type slots are the hearts, in order */
+    for (int i = 0; i < count; i++) {
+        const char **name = (const char **) (slots + (unsigned long) i * LAYOUT_SLOT_BYTES + LAYOUT_SLOT_NAME);
+        int blue = *name == bf || *name == bh, black = *name == kf || *name == kh;
+        if (!blue && !black) continue;
+        if (blue && k < 32 && ((*mp >> k) & 1u)) *name = *name == bf ? NAME_IMMORAL_FULL : NAME_IMMORAL_HALF;
+        k++;
     }
 }
 
