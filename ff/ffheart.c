@@ -42,20 +42,30 @@
  *     The game's own code does the rest - the sound, "Collect", removing it - and AddSoulHearts turns it
  *     into a black heart for Fiend (above).
  *
- * THE KINDS' ENTITIES AND ART are in a port mod folder (ff-immoral-hearts/: mod.json, content/entities2.xml,
- * resources/gfx/items/pick ups/, anm2 and png) - see its LEEME. Without it the replacements cannot be made and a
- * converted heart would not look like anything; it is checked by the reader of the first sprite, not here.
+ * THE KINDS' ENTITIES AND ART ship INSIDE THE GAME, not as a mod: the five entities are appended to the
+ * game's entities2.xml (integrar_ff.sh builds the whole file from the game's own pack and index.txt replaces
+ * it with an "over" row), and the art sits in assets/fiendfolio/gfx/items/pick ups/ with a "file" row each.
+ * Without them the replacements cannot be made and a converted heart would not look like anything.
+ *
+ * THE HEALTH BAR (stage 2c): the game builds the row of hearts it draws as a table of slots, 0x18 bytes
+ * each, in the function at 0x6e45d8(layout, slots, count, player) - read in the image: at +0x08 of a slot
+ * sits the pointer to the NAME of the animation to play, and for a black heart it is the literal
+ * "BlackHeartFull" (0xa5aabe) or "BlackHeartHalf" (0xa5aaaf). After the game has built the table for a
+ * Fiend, every slot that names one of those two gets "ImmoralHeartFull" / "ImmoralHeartHalf" instead.
+ * Those animations are not in the game's ui_hearts.anm2: they are ADDED to it by an anm2 patch of the
+ * port (portpatch.c) with the sheet ui_fiendish_heart.png - see hud-immoral/ and its LEEME. If that patch
+ * is not in the build, the animation does not exist and the hearts of a Fiend are drawn empty.
+ * (Other places that name the black heart - the pause screen, the stats - are not touched.)
  *
  * LEFT AS THE GAME DOES IT (on purpose): bone hearts when collected (the mod: bone orbitals), eternal,
  * golden and rotten hearts when added directly; the rooms where the mod does not convert (a Super Secret
- * Room with the Angel backdrop, RoomForcesSoulHeart); the health bar still draws black hearts, not purple
- * ones (the HUD needs its own hook).
+ * Room with the Angel backdrop, RoomForcesSoulHeart).
  *
  * NOT HERE: the immoral heart as a health TYPE (it is a black heart for the game), the minions made from
  * the immoral hearts a hit takes, the three orbiting fireballs, crits, bone orbitals, the pickup sounds.
  *
- * The page holding the copied starts of the seven functions is made executable in one go; if ANY of the
- * seven does not start as measured, none is touched.
+ * The page holding the copied starts of the eight functions is made executable in one go; if ANY of the
+ * eight does not start as measured, none is touched.
  */
 #include <stdint.h>
 #include <string.h>
@@ -254,10 +264,31 @@ static int w_collide(unsigned long pk, unsigned long other, int low) {
     return r;
 }
 
+/* ------------------------------------------------------------------------------ the health bar (2c) */
+#define LAYOUT_SLOT_BYTES   0x18
+#define LAYOUT_SLOT_NAME    0x08
+#define STR_BLACK_HALF      0xa5aaaf        /* "BlackHeartHalf" in the image */
+#define STR_BLACK_FULL      0xa5aabe        /* "BlackHeartFull" */
+typedef void (*fn_layout)(unsigned long, unsigned char *, int, unsigned long);
+static fn_layout o_layout;
+static const char NAME_IMMORAL_FULL[] = "ImmoralHeartFull";
+static const char NAME_IMMORAL_HALF[] = "ImmoralHeartHalf";
+
+static void w_layout(unsigned long layout, unsigned char *slots, int count, unsigned long player) {
+    o_layout(layout, slots, count, player);
+    if (!slots || count <= 0 || count > 64 || !g_base || !is_fiend(player)) return;
+    const char *bh = (const char *) (g_base + STR_BLACK_HALF), *bf = (const char *) (g_base + STR_BLACK_FULL);
+    for (int k = 0; k < count; k++) {
+        const char **name = (const char **) (slots + (unsigned long) k * LAYOUT_SLOT_BYTES + LAYOUT_SLOT_NAME);
+        if (*name == bf)      *name = NAME_IMMORAL_FULL;
+        else if (*name == bh) *name = NAME_IMMORAL_HALF;
+    }
+}
+
 #ifndef FF_HOST_TEST
 typedef struct { unsigned off; uint32_t want[4]; void *wrapper; void **orig; } det_t;
 
-static det_t g_det[7] = {
+static det_t g_det[8] = {
     { 0x4ee8a0, { 0xa9bd57f6u, 0xa9014ff4u, 0xa9027bfdu, 0x910083fdu }, (void *) w_max,   (void **) &o_max   },
     { 0x4f0338, { 0xa9bd57f6u, 0xa9014ff4u, 0xa9027bfdu, 0x910083fdu }, (void *) w_red,   (void **) &o_red   },
     { 0x4ef2d0, { 0xa9ba6ffcu, 0xa90167fau, 0xa9025ff8u, 0xa90357f6u }, (void *) w_soul,  (void **) &o_soul  },
@@ -265,8 +296,9 @@ static det_t g_det[7] = {
     { 0x4ef5c4, { 0xa9bc5ff8u, 0xa90157f6u, 0xa9024ff4u, 0xa9037bfdu }, (void *) w_bone,  (void **) &o_bone  },
     { 0x88fcbc, { 0xd10283ffu, 0xa9046ffcu, 0xa90567fau, 0xa9065ff8u }, (void *) w_spawn,   (void **) &o_spawn   },
     { 0x71e310, { 0xd10783ffu, 0x6d162bebu, 0x6d1723e9u, 0xa9186ffcu }, (void *) w_collide, (void **) &o_collide },
+    { 0x6e45d8, { 0xd102c3ffu, 0xa9056ffcu, 0xa90667fau, 0xa9075ff8u }, (void *) w_layout,  (void **) &o_layout  },
 };
-#define N_DET 7
+#define N_DET 8
 
 /* at load, before the image is closed */
 void shim_ffheart_install(unsigned char *base) {
@@ -288,6 +320,6 @@ void shim_ffheart_install(unsigned char *base) {
     __builtin___clear_cache((char *) page, (char *) page + N_DET * 32);
     for (int i = 0; i < N_DET; i++) *g_det[i].orig = page + i * 32;
     for (int i = 0; i < N_DET; i++) shim_hook(base + g_det[i].off, g_det[i].wrapper);
-    LOG("ffheart: Fiend's health rules and heart pickups are on");
+    LOG("ffheart: Fiend's health rules, heart pickups and health bar are on");
 }
 #endif

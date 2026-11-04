@@ -26,8 +26,8 @@
  * be changed again - a multiplier applied twice to a damage nobody recomputed would grow every call.
  * The same goes for the colours: they are rebuilt from the default each time bit 64 is evaluated.
  *
- * THE CHARACTERS are ids 41..60, in the order of the merged players.xml (the "charslots" patch makes
- * the table that large). Biend/Briend/Binaba/Slippy/Image/Freezer Jr/Peat have no stat lines in the
+ * THE CHARACTERS are ids 41..60, in the order of the merged players.xml. The table is made that large HERE
+ * (shim_ffchars_install: the word at 0x7855dc), always, not by a switch of the MODS menu. Biend/Briend/Binaba/Slippy/Image/Freezer Jr/Peat have no stat lines in the
  * mod's player files, or only conditional ones, and stay as the game computes them. The Skeletal Fiend
  * (54) is an Epiphany-compatibility character: its slot stays so the ids do not move, its numbers do not.
  *
@@ -262,8 +262,23 @@ static void ff_evaluate(unsigned long p) {
 }
 
 #ifndef FF_HOST_TEST
-/* at load, before the image is closed: EvaluateItems is ours */
+int shim_patch_word(unsigned long off, uint32_t was_a, uint32_t was_b, uint32_t now);   /* loader.c */
+
+/*
+ * THE CHARACTER SLOTS, ALWAYS ON. The game fills its table of characters with resize(41) - a "mov w1,#41" at
+ * 0x7855dc (0x52800521). Fiend Folio's 20 characters are ids 41..60, so it becomes "mov w1,#61" (0x528007a1).
+ * This was Yama's "charslots" group, a switch of the MODS menu; it is part of the game's build now, with no
+ * switch: the word may be the original or already ours (Yama's loader writes the same one), anything else
+ * and the patch is cancelled by shim_patch_word.
+ */
+#define FN_CHAR_TABLE_SIZE  0x7855dc
+#define MOV_W1_41           0x52800521u
+#define MOV_W1_61           0x528007a1u
+
+/* at load, before the image is closed: the slots, and EvaluateItems is ours */
 void shim_ffchars_install(unsigned char *base) {
+    if (!shim_patch_word(FN_CHAR_TABLE_SIZE, MOV_W1_41, MOV_W1_61, MOV_W1_61))
+        LOG("ffchars: the character table could not be widened");
     uint32_t *fn = (uint32_t *) (base + FN_EVALUATE_ITEMS);
     /* stp d15,d14 / d13,d12 / d11,d10 / d9,d8: the image this was measured on; anything else is left alone */
     static const uint32_t want[4] = { 0x6db63befu, 0x6d0133edu, 0x6d022bebu, 0x6d0323e9u };
