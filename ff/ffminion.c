@@ -38,11 +38,7 @@
 #include <android/log.h>
 #include "diag.h"
 
-#if ISAAC_DIAG
-#define LOG(...) __android_log_print(ANDROID_LOG_INFO, "isaac", __VA_ARGS__)
-#else
-#define LOG(...) do { } while (0)
-#endif
+#include "ffsay.h"
 
 #define PICKUP_VTABLE      0xa8e760
 #define SLOT_UPDATE        4
@@ -364,6 +360,8 @@ static void minion_ai(unsigned long e) {
 }
 
 static void w_update(unsigned long e) {
+    ff_flush();
+    LOG_FEW(5, "ffminion: the Pickup::Update hook is running (first pickup: 5.%d.%d)", *(const int *) (e + E_VARIANT), *(const int *) (e + E_SUBTYPE));
     o_update(e);
     if (*(const int *) (e + E_VARIANT) == V_MINION && *(const int *) (e + E_TYPE) == T_PICKUP && alive(e)) minion_ai(e);
 }

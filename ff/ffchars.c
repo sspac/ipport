@@ -52,11 +52,7 @@
 #include <android/log.h>
 #include "diag.h"
 
-#if ISAAC_DIAG
-#define LOG(...) __android_log_print(ANDROID_LOG_INFO, "isaac", __VA_ARGS__)
-#else
-#define LOG(...) do { } while (0)
-#endif
+#include "ffsay.h"
 
 void shim_hook(void *at, void *to);
 

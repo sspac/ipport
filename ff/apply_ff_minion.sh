@@ -6,6 +6,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 CPP=port/app/src/main/cpp
 cp "$HERE/ffheart.c" "$CPP/ffheart.c"        # the hit hook and the minion collision block live here
 cp "$HERE/ffminion.c" "$CPP/ffminion.c"
+cp "$HERE/ffsay.h" "$CPP/ffsay.h"
+cp "$HERE/ffchars.c" "$CPP/ffchars.c"
 python3 - <<'PY'
 C = 'port/app/src/main/cpp/'
 def rd(p): return open(p, encoding='utf-8', newline='').read()

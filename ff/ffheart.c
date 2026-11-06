@@ -89,11 +89,7 @@
 #include <android/log.h>
 #include "diag.h"
 
-#if ISAAC_DIAG
-#define LOG(...) __android_log_print(ANDROID_LOG_INFO, "isaac", __VA_ARGS__)
-#else
-#define LOG(...) do { } while (0)
-#endif
+#include "ffsay.h"
 
 void shim_hook(void *at, void *to);
 
@@ -244,13 +240,18 @@ static void hit_makes_minions(unsigned long p, int before, unsigned mask, unsign
 
 static int g_minion_busy;
 
+static int g_hit_logs;
 static void w_soul(unsigned long p, int halves) {
+    ff_flush();
     /* a Fiend's direct soul heart is black (his rule); an immoral pickup being collected is the one thing that is not */
     if (halves > 0 && !g_conv && !g_immoral && is_fiend(p)) { as_black(p, halves); return; }
     int before = soul_halves(p);
     unsigned mask = *imm_slot(p), black = *(const unsigned *) (p + P_BLACK_MASK);
     o_soul(p, halves);
     imm_after(p, before, soul_halves(p), g_immoral > 0 && halves > 0);
+    if (halves < 0 && g_hit_logs++ < 6)
+        LOG("ffheart: soul %d -> %d (halves %d), imm mask %#x, black mask %#x, room active %d, fiend %d, conv %d",
+            before, soul_halves(p), halves, mask, black, ffminion_room_active(), is_fiend(p), g_conv);
     if (halves < 0 && !g_conv && !g_minion_busy && soul_halves(p) < before && ffminion_room_active()) {
         g_minion_busy++;
         hit_makes_minions(p, before, mask, black);
@@ -337,6 +338,7 @@ static int morph_decide(int sub, unsigned seed, float luck, int *nv, int *ns) {
     return 0;
 }
 
+static int g_spawn_logs;
 static unsigned long w_spawn(unsigned long game, int type, int variant, const float *pos, const float *vel,
                              unsigned long spawner, int subtype, int seed, int flag) {
     unsigned long e = o_spawn(game, type, variant, pos, vel, spawner, subtype, seed, flag);
