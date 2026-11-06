@@ -1,0 +1,407 @@
+/*
+ * FIEND FOLIO - FIEND MINIONS (ffscripts/players/fiend.lua FiendMinionAI, customhealth.lua POST_HEALTH_DAMAGED), natively.
+ *
+ * WHAT THE MOD DOES (cited from the Lua; line numbers are ff-test's):
+ *   - when a hit lands on an immoral heart in an active room, the run of immoral hearts at the end of the soul chain
+ *     becomes minions: 2 halves -> pickup 5.750 subtype 2, a lone half -> subtype 3 (customhealth.lua:643-700). Black
+ *     hearts do the same for Fiend with subtype 1 (:756-800) and are "fiendBonus" ones.
+ *   - a minion drops (animation "Drop", velocity x0.8 each frame), waits 15 frames, then chases the nearest active enemy
+ *     within 900 (the player if there is none): speed max(3, MoveSpeed*5), every 2nd frame vel = lerp(vel, dir*speed, 0.3)
+ *     (fiend.lua:967-968, 1111-1145).
+ *   - every max(3, MaxFireDelay) frames (a random 0..14 offset each) it hits each active, vulnerable, not friendly enemy it
+ *     touches: a CRITICAL with chance 1/max(10, S - floor(Luck*20)) (S = 250, 150 for a fiendBonus one) for Damage*5 and
+ *     the "Critical Hit" effect 1000.1734; otherwise Damage*0.2 (0.4 for a fiendBonus one) (fiend.lua:1146-1194).
+ *   - when the room is no longer active the minion plays "Transform" and, past frame 20, becomes the heart it stands for
+ *     (immoral 5.1024 / half 5.1025 / black 5.10.6) (fiend.lua:1069-1110, fiendMix.lua).
+ *
+ * WHAT IS MEASURED IN THE IMAGE (sha 217be349..., see FIEND_MINIONS_ANALISIS.md):
+ *   Entity_Pickup vtable: functions from 0xa8e760, slot k at 0xa8e760 + 8k. Slot 4 = Pickup::Update 0x7193a4 (the slot is
+ *   checked before it is written: if it is not that function nothing is touched), slot 9 = TakeDamage(this, float,
+ *   u64 flags, EntityRef *, int) (0x7220dc for pickups, 0x69876c for NPCs: called through the TARGET's own vtable),
+ *   slot 18 = IsActiveEnemy (NPC 0x69aae4: byte +0xcc8 set and flag bit 29 (+0x1bb & 0x20, friendly) clear), slot 19 =
+ *   IsVulnerableEnemy (0x69ab04: byte +0xcc9). Entity: position +0x310, velocity +0x320, Size +0x344 (the float the game
+ *   adds for two entities 14 times), sprite +0x50, type/variant/subtype +0x38/+0x3c/+0x40, exists/dead +0x1c2/+0x1c3.
+ *   Sprite: Play 0x89e82c(sprite, name, force), SetFrame 0x89eab8(sprite, name, frame), SetOverlayFrame 0x89ee7c(sprite,
+ *   name, frame) (it sets the overlay animation and its frame; the overlay sits at sprite+0x60). Player: MaxFireDelay
+ *   +0x1834, Damage +0x1844, MoveSpeed +0x194c, Luck +0x1950 (ffchars.c). Room: [Game+0x21550], active enemy counts +0x1a58
+ *   and +0x1a5c, clear delay +0x1918 (spawner.c). Room entity list: array +0x78, count +0x84 (eid_craft.c).
+ *
+ * WHAT IS NOT MEASURED AND SO IS NOT DONE (each is a line in the report): the EntityRef the game wants with a damage
+ * is a zeroed block (type 0, no source entity: the hit is credited to nobody); there is no pathfinding (a minion goes
+ * straight at its target and can stop behind a rock); no sound; no blood splat; the sprite is not flipped; War Horn,
+ * Imp Soda, flying players, Birthcake and persistent minions of other mods are not here. The "active room" is the
+ * game's own enemy count (+0x1a58/+0x1a5c) or its clear delay: an ambush wave pause counts as clear.
+ */
+#include <stdint.h>
+#include <string.h>
+#include <time.h>
+#include <android/log.h>
+#include "diag.h"
+
+#if ISAAC_DIAG
+#define LOG(...) __android_log_print(ANDROID_LOG_INFO, "isaac", __VA_ARGS__)
+#else
+#define LOG(...) do { } while (0)
+#endif
+
+#define PICKUP_VTABLE      0xa8e760
+#define SLOT_UPDATE        4
+#define FN_PICKUP_UPDATE   0x7193a4
+#define VT_TAKE_DAMAGE     (9 * 8)
+#define VT_ACTIVE_ENEMY    (18 * 8)
+#define VT_VULNERABLE      (19 * 8)
+
+#define FN_SPAWN           0x88fcbc
+#define FN_SPRITE_PLAY     0x89e82c
+#define FN_SPRITE_OVERLAY  0x89ee7c
+
+#define GAME_PTR           0xac3b90
+#define GAME_ROOM          0x21550
+#define GAME_PLAYER_LIST   0x25c50
+#define GAME_PLAYERS       0x25c40
+#define FN_PLAYER_AT       0x4da574
+#define ROOM_ENEMIES_A     0x1a58
+#define ROOM_ENEMIES_B     0x1a5c
+#define ROOM_CLEAR_DELAY   0x1918
+
+#define E_TYPE 0x38
+#define E_VARIANT 0x3c
+#define E_SUBTYPE 0x40
+#define E_SPRITE 0x50
+#define E_FLAGS 0x1b8
+#define E_EXISTS 0x1c2
+#define E_DEAD 0x1c3
+#define E_POS 0x310
+#define E_VEL 0x320
+#define E_SIZE 0x344
+#define SPRITE_OFFSET_AT 0x108
+#define LIST_ARRAY 0x78
+#define LIST_COUNT 0x84
+#define FLAG_FRIENDLY (1ull << 29)
+
+#define P_FIRE_DELAY 0x1834
+#define P_DAMAGE 0x1844
+#define P_MOVE_SPEED 0x194c
+#define P_LUCK 0x1950
+
+#define V_MINION 750
+#define SUB_BLACK 1
+#define SUB_IMMORAL 2
+#define SUB_HALF_IMMORAL 3
+#define V_HEART 10
+#define V_IMMORAL 1024
+#define V_HALF_IMMORAL 1025
+#define ST_BLACK 6
+#define T_PICKUP 5
+#define T_EFFECT 1000
+#define V_CRIT 1734
+
+#define DROP_FRAMES 22              /* "Drop" FrameNum */
+#define GRACE_FRAMES 15
+#define TRANSFORM_AT 21             /* Lua: Transform past frame 20 */
+#define CHASE_RANGE 900.0f
+#define CRIT_MS 1100                /* the "Crit" animation: 31 frames at 30 per second, and a little more */
+
+typedef void (*fn_update)(unsigned long);
+typedef unsigned long (*fn_spawn)(unsigned long, int, int, const float *, const float *, unsigned long, int, int, int);
+typedef void (*fn_play)(void *, const char *, int);
+typedef void (*fn_overlay)(void *, const char *, int);
+typedef int (*fn_take)(unsigned long, float, unsigned long long, void *, int);
+typedef int (*fn_pred)(unsigned long);
+
+static unsigned char *g_base;
+static fn_update o_update;
+static fn_spawn g_spawn;                    /* the host test puts its own here */
+static fn_play g_play;
+static fn_overlay g_overlay;
+static unsigned long (*g_list_now)(void);   /* the room's entity list object (port: shim_eid_list_now) */
+
+unsigned long shim_eid_list_now(void);
+int shim_eid_readable(const void *p, unsigned long n);      /* eid.c: the room list may hold a freed entity */
+static int (*g_readable)(const void *, unsigned long);
+#define ENT_READ 0x350                                       /* up to the Size field */
+
+/* ---------------------------------------------------------------------------------------------- tiny helpers */
+static float *fpos(unsigned long e) { return (float *) (e + E_POS); }
+static float *fvel(unsigned long e) { return (float *) (e + E_VEL); }
+static float fsize(unsigned long e) { return *(const float *) (e + E_SIZE); }
+
+static unsigned xs(unsigned *s) { unsigned x = *s; x ^= x << 13; x ^= x >> 17; x ^= x << 5; return *s = x; }
+static unsigned g_seed = 0x1badf00d;
+static int g_logs[8];                                        /* the first few of each event are logged, not all */
+#define LOG_FEW(k, ...) do { if (g_logs[k]++ < 4) LOG(__VA_ARGS__); } while (0)
+static unsigned rnd(unsigned n) { return n ? xs(&g_seed) % n : 0; }
+
+static long long now_ms(void) {
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (long long) t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+/* ---------------------------------------------------------------------------------------------- the room */
+static unsigned long real_room(void) {
+    if (!g_base) return 0;
+    unsigned long game = *(const unsigned long *) (g_base + GAME_PTR);
+    return game ? *(const unsigned long *) (game + GAME_ROOM) : 0;
+}
+static unsigned long (*g_room)(void) = real_room;
+
+/* the game's own idea of an active room: enemies counted, or the clear delay still running */
+int ffminion_room_active(void) {
+    unsigned long room = g_room();
+    if (!room) return 0;
+    int a = *(const int *) (room + ROOM_ENEMIES_A), b = *(const int *) (room + ROOM_ENEMIES_B);
+    int d = *(const int *) (room + ROOM_CLEAR_DELAY);
+    return a + b > 0 || (d >= 1 && d <= 10);
+}
+
+/* a snapshot of the room's entities (the list may change while we hit things) */
+#define SNAP 256
+static unsigned snapshot(unsigned long *out) {
+    unsigned long list = g_list_now();
+    if (!list) return 0;
+    const unsigned long *items = *(const unsigned long *const *) (list + LIST_ARRAY);
+    unsigned n = *(const unsigned *) (list + LIST_COUNT);
+    if (!items || n > 4096) return 0;
+    unsigned k = 0;
+    for (unsigned i = 0; i < n && k < SNAP; i++)
+        if (items[i] && g_readable((const void *) items[i], ENT_READ)) out[k++] = items[i];
+    return k;
+}
+
+static int alive(unsigned long e) { return *(const unsigned char *) (e + E_EXISTS) && !*(const unsigned char *) (e + E_DEAD); }
+static int vcall(unsigned long e, int off) {
+    const unsigned long *vt = *(const unsigned long *const *) e;
+    return vt ? ((fn_pred) vt[off / 8])(e) : 0;
+}
+static int is_target(unsigned long e) {
+    if (!alive(e)) return 0;
+    int type = *(const int *) (e + E_TYPE);
+    if (type < 10 || type >= 1000) return 0;                  /* NPCs only: players, tears, pickups, effects are not targets */
+    if (*(const unsigned long long *) (e + E_FLAGS) & FLAG_FRIENDLY) return 0;
+    return vcall(e, VT_ACTIVE_ENEMY) && vcall(e, VT_VULNERABLE);
+}
+
+static int hit_enemy(unsigned long e, float damage) {
+    static unsigned char ref[0x100];                          /* an EntityRef with no source: type 0, entity 0 */
+    memset(ref, 0, sizeof ref);
+    const unsigned long *vt = *(const unsigned long *const *) e;
+    if (!vt) return 0;
+    return ((fn_take) vt[VT_TAKE_DAMAGE / 8])(e, damage, 0ull, ref, 0);
+}
+
+/* ---------------------------------------------------------------------------------------------- per-minion state */
+#define MAXM 64
+enum { S_DROP = 0, S_ACTIVE = 1, S_TRANSFORM = 2 };
+static struct {
+    unsigned long e, owner, target;
+    int age, state, tick_off, head, tstart;
+} g_m[MAXM];
+
+static struct { unsigned long e; long long born; } g_crit[16];
+
+static int slot_of(unsigned long e, int create, unsigned long owner) {
+    int free = -1;
+    for (int i = 0; i < MAXM; i++) {
+        if (g_m[i].e == e) return i;
+        if (!g_m[i].e && free < 0) free = i;
+    }
+    if (!create) return -1;
+    if (free < 0) free = 0;                                   /* the oldest rows are long gone; never overrun */
+    memset(&g_m[free], 0, sizeof g_m[free]);
+    g_m[free].e = e; g_m[free].owner = owner;
+    g_m[free].tick_off = (int) rnd(15);
+    g_m[free].head = (int) rnd(206);
+    return free;
+}
+
+static unsigned long first_player(void) {
+    if (!g_base) return 0;
+    unsigned long game = *(const unsigned long *) (g_base + GAME_PTR);
+    if (!game) return 0;
+    const unsigned long *l = (const unsigned long *) (game + GAME_PLAYER_LIST);
+    if (!l[0] || l[1] < l[0]) return 0;
+    return ((unsigned long (*)(unsigned long, int)) (g_base + FN_PLAYER_AT))(game + GAME_PLAYERS, 0);
+}
+static unsigned long (*g_first_player)(void) = first_player;
+
+static void sweep_crits(void) {
+    long long t = now_ms();
+    for (int i = 0; i < 16; i++) {
+        if (!g_crit[i].e) continue;
+        if (t - g_crit[i].born >= CRIT_MS) {                  /* the animation is over: the effect goes (Lua CritHit) */
+            unsigned long e = g_crit[i].e;
+            if (*(const int *) (e + E_TYPE) == T_EFFECT && *(const int *) (e + E_VARIANT) == V_CRIT) {
+                *(unsigned char *) (e + E_DEAD) = 1;
+                *(unsigned char *) (e + E_EXISTS) = 0;
+            }
+            g_crit[i].e = 0;
+        } else {                                              /* it rises one pixel a frame (Lua CritHit) */
+            unsigned long e = g_crit[i].e;
+            if (*(const int *) (e + E_TYPE) == T_EFFECT && *(const int *) (e + E_VARIANT) == V_CRIT)
+                ((float *) (e + E_SPRITE + SPRITE_OFFSET_AT))[1] -= 1.0f;
+            else g_crit[i].e = 0;
+        }
+    }
+}
+
+static void show_crit(unsigned long at_minion) {
+    float vel[2] = { 0, 0 };
+    unsigned long c = g_spawn(*(const unsigned long *) (g_base + GAME_PTR), T_EFFECT, V_CRIT, fpos(at_minion), vel, at_minion, 0, 0, 0);
+    if (!c) return;
+    ((float *) (c + E_SPRITE + SPRITE_OFFSET_AT))[1] = -15.0f;       /* Lua: SpriteOffset (0, -15) */
+    for (int i = 0; i < 16; i++) if (!g_crit[i].e) { g_crit[i].e = c; g_crit[i].born = now_ms(); return; }
+}
+
+/* ---------------------------------------------------------------------------------------------- the rules, testable */
+/* chance 1 in n of a critical; S is 250, or 150 for a fiendBonus (black) minion */
+int ffminion_crit_n(int bonus, float luck) {
+    int n = (bonus ? 150 : 250) - (int) (luck * 20.0f);       /* floor for a positive luck; the Lua floors a negative one down */
+    if (luck < 0 && (luck * 20.0f) != (float) (int) (luck * 20.0f)) n = (bonus ? 150 : 250) - (int) (luck * 20.0f) + 1;
+    return n < 10 ? 10 : n;
+}
+float ffminion_hit_damage(float player_damage, int bonus, int crit) {
+    return crit ? player_damage * 5.0f : player_damage * (bonus ? 0.4f : 0.2f);
+}
+int ffminion_period(float max_fire_delay) { int p = (int) max_fire_delay; return p < 3 ? 3 : p; }
+float ffminion_speed(float move_speed) { float s = move_speed * 5.0f; return s < 3.0f ? 3.0f : s; }
+void ffminion_heart_for(int sub, int *variant, int *subtype) {
+    if (sub == SUB_IMMORAL) { *variant = V_IMMORAL; *subtype = 0; }
+    else if (sub == SUB_HALF_IMMORAL) { *variant = V_HALF_IMMORAL; *subtype = 0; }
+    else { *variant = V_HEART; *subtype = ST_BLACK; }
+}
+
+/* ---------------------------------------------------------------------------------------------- one Update */
+static void to_heart(unsigned long e, int sub) {
+    int v, st;
+    ffminion_heart_for(sub, &v, &st);
+    float zero[2] = { 0, 0 };
+    unsigned long h = g_spawn(*(const unsigned long *) (g_base + GAME_PTR), T_PICKUP, v, fpos(e), zero, 0, st, 0, 0);
+    if (!h) return;                                           /* could not be made: the minion stays as it was */
+    *(unsigned char *) (e + E_DEAD) = 1;
+    *(unsigned char *) (e + E_EXISTS) = 0;
+    LOG_FEW(4, "ffminion: a minion went back to being a heart (5.%d.%d)", v, st);
+}
+
+static unsigned long pick_target(unsigned long e, unsigned long owner) {
+    unsigned long snap[SNAP];
+    unsigned n = snapshot(snap);
+    unsigned long best = 0;
+    float bd = CHASE_RANGE * CHASE_RANGE;
+    for (unsigned i = 0; i < n; i++) {
+        unsigned long c = snap[i];
+        if (c == e || !is_target(c)) continue;
+        float dx = fpos(c)[0] - fpos(e)[0], dy = fpos(c)[1] - fpos(e)[1], d = dx * dx + dy * dy;
+        if (d < bd) { bd = d; best = c; }
+    }
+    return best ? best : owner;
+}
+
+static void contact_tick(unsigned long e, unsigned long owner, int bonus) {
+    float damage = *(const float *) (owner + P_DAMAGE), luck = *(const float *) (owner + P_LUCK);
+    unsigned long snap[SNAP];
+    unsigned n = snapshot(snap);
+    for (unsigned i = 0; i < n; i++) {
+        unsigned long c = snap[i];
+        if (c == e || !is_target(c)) continue;                /* re-checked here: an earlier hit may have killed it */
+        float dx = fpos(c)[0] - fpos(e)[0], dy = fpos(c)[1] - fpos(e)[1];
+        float reach = fsize(c) + fsize(e);
+        if (dx * dx + dy * dy > reach * reach) continue;
+        int crit = rnd((unsigned) ffminion_crit_n(bonus, luck)) == 0;
+        hit_enemy(c, ffminion_hit_damage(damage, bonus, crit));
+        LOG_FEW(3, "ffminion: a minion hit an enemy (type %d) for %.2f%s", *(const int *) (c + E_TYPE), ffminion_hit_damage(damage, bonus, crit), crit ? " - CRITICAL" : "");
+        if (crit) show_crit(e);
+    }
+}
+
+static void minion_ai(unsigned long e) {
+    int i = slot_of(e, 1, 0);
+    if (!g_m[i].owner) g_m[i].owner = g_first_player();
+    unsigned long owner = g_m[i].owner;
+    if (!owner) return;
+    int sub = *(const int *) (e + E_SUBTYPE);
+    int bonus = sub == SUB_BLACK;
+    void *sprite = (void *) (e + E_SPRITE);
+    sweep_crits();
+    if (g_m[i].age == 0) { g_play(sprite, "Drop", 1); LOG_FEW(2, "ffminion: first Update of a minion (sub %d): the AI runs", sub); }
+    g_m[i].age++;
+    float *v = fvel(e);
+
+    if (g_m[i].state == S_TRANSFORM) {                        /* Lua: "Transform", past frame 20 it becomes the heart */
+        v[0] *= 0.8f; v[1] *= 0.8f;
+        if (++g_m[i].tstart > TRANSFORM_AT) { to_heart(e, sub); g_m[i].e = 0; }
+        return;
+    }
+    if (g_m[i].age < DROP_FRAMES) { v[0] *= 0.8f; v[1] *= 0.8f; return; }          /* "Drop" */
+
+    g_overlay(sprite, "Head", g_m[i].head);                   /* the head is an overlay animation of its own */
+
+    if (!ffminion_room_active()) {                            /* the fight is over: back to being a heart */
+        g_m[i].state = S_TRANSFORM; g_m[i].tstart = 0;
+        g_play(sprite, "Transform", 1);
+        return;
+    }
+    if (g_m[i].age < DROP_FRAMES + GRACE_FRAMES) return;      /* 15 frames of grace after the drop */
+    unsigned long t = g_m[i].target;
+    if (t && (!alive(t) || g_m[i].age % 60 == 0 || (t == owner && g_m[i].age % 15 == 0))) t = 0;
+    if (!t) t = pick_target(e, owner);
+    g_m[i].target = t;
+
+    float speed = ffminion_speed(*(const float *) (owner + P_MOVE_SPEED));
+    if (t && g_m[i].age % 2 == 0) {
+        float dx = fpos(t)[0] - fpos(e)[0], dy = fpos(t)[1] - fpos(e)[1];
+        float len = __builtin_sqrtf(dx * dx + dy * dy);
+        if (len > 0.001f) { dx = dx / len * speed; dy = dy / len * speed; }
+        v[0] += (dx - v[0]) * 0.3f;                           /* Lerp(vel, dir*speed, 0.3) */
+        v[1] += (dy - v[1]) * 0.3f;
+    }
+    {
+        float ax = v[0] < 0 ? -v[0] : v[0], ay = v[1] < 0 ? -v[1] : v[1];
+        g_play(sprite, ax > ay ? "WalkHori" : "WalkVert", 0);
+    }
+    int period = ffminion_period(*(const float *) (owner + P_FIRE_DELAY));
+    if ((g_m[i].age + g_m[i].tick_off) % period == 0) contact_tick(e, owner, bonus);
+}
+
+static void w_update(unsigned long e) {
+    o_update(e);
+    if (*(const int *) (e + E_VARIANT) == V_MINION && *(const int *) (e + E_TYPE) == T_PICKUP && alive(e)) minion_ai(e);
+}
+
+/* ---------------------------------------------------------------------------------------------- the hit makes them */
+/* a minion for `halves` (2 -> a whole one, 1 -> a half), thrown out of the player */
+int ffminion_spawn(unsigned long player, int sub) {
+    if (!g_base || !player) return 0;
+    float vel[2] = { (float) ((int) rnd(11) - 5), (float) ((int) rnd(11) - 5) };       /* Lua: random(-5, 5) */
+    unsigned long e = g_spawn(*(const unsigned long *) (g_base + GAME_PTR), T_PICKUP, V_MINION, fpos(player), vel, player, sub, 0, 0);
+    if (!e) { LOG_FEW(0, "ffminion: Spawn(5.750.%d) returned nothing - is the entity in entities2.xml?", sub); return 0; }
+    LOG_FEW(1, "ffminion: made a minion (5.750.%d) at %.0f,%.0f", sub, fpos(player)[0], fpos(player)[1]);
+    for (int i = 0; i < MAXM; i++) if (g_m[i].e == e) g_m[i].e = 0;      /* a row left by a minion that stood at this address */
+    slot_of(e, 1, player);
+    return 1;
+}
+
+#ifndef FF_HOST_TEST
+static unsigned long real_spawn(unsigned long game, int type, int variant, const float *pos, const float *vel,
+                                unsigned long sp, int sub, int seed, int flag) {
+    return ((fn_spawn) (g_base + FN_SPAWN))(game, type, variant, pos, vel, sp, sub, seed, flag);
+}
+static void real_play(void *s, const char *n, int f) { ((fn_play) (g_base + FN_SPRITE_PLAY))(s, n, f); }
+static void real_overlay(void *s, const char *n, int f) { ((fn_overlay) (g_base + FN_SPRITE_OVERLAY))(s, n, f); }
+
+/* at load, before the image is closed: the Pickup vtable's Update slot is ours (the way rangefix.c takes the knife's) */
+void shim_ffminion_install(unsigned char *base) {
+    unsigned long *slot = (unsigned long *) (base + PICKUP_VTABLE + 8 * SLOT_UPDATE);
+    if (*slot == (unsigned long) w_update) return;
+    if (*slot != (unsigned long) base + FN_PICKUP_UPDATE) {
+        LOG("ffminion: pickup vtable slot 4 holds %lx, not Pickup::Update - nothing touched", *slot - (unsigned long) base);
+        return;
+    }
+    g_base = base;
+    g_spawn = real_spawn; g_play = real_play; g_overlay = real_overlay; g_list_now = shim_eid_list_now; g_readable = shim_eid_readable;
+    g_seed ^= (unsigned) now_ms();
+    o_update = (fn_update) *slot;
+    *slot = (unsigned long) w_update;
+    LOG("ffminion: Pickup::Update wrapped (vtable slot 4)");
+}
+#endif

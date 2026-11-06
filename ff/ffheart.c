@@ -99,6 +99,9 @@ void shim_hook(void *at, void *to);
 
 #define PLAYER_TYPE   0x1738
 #define P_SOUL        0x16c4                /* soul-type halves, black ones inside */
+#define P_BLACK_MASK  0x16c8                /* bit i: whole soul heart i is black (AddBlackHearts writes it, 0x4ef230) */
+#define P_RED         0x16b8                /* red halves */
+#define V_MINION      750
 #define STR_BLUE_HALF 0xa5aacd              /* "BlueHeartHalf" in the image: a plain soul heart */
 #define STR_BLUE_FULL 0xa5aadb              /* "BlueHeartFull" */
 #define STR_BLACK_HALF 0xa5aaaf             /* "BlackHeartHalf" */
@@ -187,12 +190,72 @@ static void w_red(unsigned long p, int halves, int flag) {
     o_red(p, halves, flag);
 }
 
+/* ------------------------------------------------------------------------------ the minions (customhealth.lua:643-820) */
+int ffminion_spawn(unsigned long player, int sub);   /* ffminion.c */
+int ffminion_room_active(void);
+#define SUB_MINION_BLACK 1
+#define SUB_MINION_IMMORAL 2
+#define SUB_MINION_HALF 3
+
+/* the hearts of the top run, from the top: hp of heart i, given the halves left */
+static int hp_of(int i, int halves) { return (i == (halves + 1) / 2 - 1 && (halves & 1)) ? 1 : 2; }
+
+/*
+ * A hit has just taken `before - after` halves off the soul chain. The Lua asks whether the LAST DAMAGED heart was an
+ * immoral one (or, for a Fiend, a black one) and, if so, walks the remaining chain from its top and turns the whole
+ * contiguous run of that kind into minions: 2 halves -> a whole minion, a leftover half -> a half one. The immoral run
+ * keeps one half when it is all the health left (customhealth.lua:664-668); the black run, when nothing is left, hands one
+ * half back as a black heart (:757-762). `mask`/`black` are the masks as they were BEFORE the hit.
+ */
+static void hit_makes_minions(unsigned long p, int before, unsigned mask, unsigned black) {
+    if (before <= 0) return;
+    int top = (before + 1) / 2 - 1;                         /* the heart the hit landed on */
+    int imm = top < 32 && ((mask >> top) & 1u);
+    int blk = !imm && top < 32 && ((black >> top) & 1u) && is_fiend(p);
+    if (!imm && !blk) return;
+    int minions = 0;                                        /* halves */
+    unsigned *mp = imm_slot(p);
+    for (;;) {
+        int s = soul_halves(p);
+        if (s <= 0) break;
+        int i = (s + 1) / 2 - 1, hp = hp_of(i, s);
+        int is_imm = i < 32 && ((*mp >> i) & 1u);
+        int is_blk = i < 32 && ((*(const unsigned *) (p + P_BLACK_MASK) >> i) & 1u) && !is_imm;
+        if (imm ? !is_imm : !is_blk) break;
+        if (imm && *(const int *) (p + P_RED) + s <= hp) {   /* the heart is all the health there is: it keeps one half */
+            minions += hp - 1;
+            if (hp > 1) { o_soul(p, -(hp - 1)); imm_after(p, s, soul_halves(p), 0); }
+            break;
+        }
+        minions += hp;
+        o_soul(p, -hp);
+        imm_after(p, s, soul_halves(p), 0);
+    }
+    if (blk && minions > 0 && *(const int *) (p + P_RED) + soul_halves(p) <= 0) {     /* a Fiend never dies of this */
+        g_conv++; o_black(p, 1); g_conv--;
+        minions -= 1;
+    }
+    for (; minions > 0; minions -= 2) {
+        if (imm)      ffminion_spawn(p, minions >= 2 ? SUB_MINION_IMMORAL : SUB_MINION_HALF);
+        else if (minions >= 2) ffminion_spawn(p, SUB_MINION_BLACK);
+        /* a leftover black half is an EFFECT minion in the Lua (FIEND_MINION_EFFECT): not ported yet */
+    }
+}
+
+static int g_minion_busy;
+
 static void w_soul(unsigned long p, int halves) {
     /* a Fiend's direct soul heart is black (his rule); an immoral pickup being collected is the one thing that is not */
     if (halves > 0 && !g_conv && !g_immoral && is_fiend(p)) { as_black(p, halves); return; }
     int before = soul_halves(p);
+    unsigned mask = *imm_slot(p), black = *(const unsigned *) (p + P_BLACK_MASK);
     o_soul(p, halves);
     imm_after(p, before, soul_halves(p), g_immoral > 0 && halves > 0);
+    if (halves < 0 && !g_conv && !g_minion_busy && soul_halves(p) < before && ffminion_room_active()) {
+        g_minion_busy++;
+        hit_makes_minions(p, before, mask, black);
+        g_minion_busy--;
+    }
 }
 
 static void w_black(unsigned long p, int halves) {          /* calls AddSoulHearts inside */
@@ -305,6 +368,7 @@ static int soul_form(int variant) {
 
 static int w_collide(unsigned long pk, unsigned long other, int low) {
     int variant = *(const int *) (pk + E_VARIANT);
+    if (variant == V_MINION && *(const int *) (pk + E_TYPE) == PICKUP) return 0;   /* a minion is not picked up */
     int sub = soul_form(variant);
     if (!sub || *(const int *) (other + E_TYPE) != 1 /* the player: type 1 */) return o_collide(pk, other, low);
     int was = *(const int *) (pk + E_SUBTYPE);
