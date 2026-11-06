@@ -32,11 +32,7 @@
 #include <android/log.h>
 #include "diag.h"
 
-#if ISAAC_DIAG
-#define LOG(...) __android_log_print(ANDROID_LOG_INFO, "isaac", __VA_ARGS__)
-#else
-#define LOG(...) do { } while (0)
-#endif
+#include "ffsay.h"
 
 void shim_hook(void *at, void *to);
 
@@ -75,8 +71,34 @@ static unsigned table_count(void) {
 
 static void (*g_register)(unsigned long, void *);       /* the host test puts its own here */
 
+#include <stdlib.h>
+static const char *const FF_NAMES[20] = { "Fiend","Biend","Golem","Bolem","Friend","Briend","Inaba","Binaba","Slippy","China",
+    "Craig","Classic Fiend","Image","Skeletal Fiend","Fend","Frond","Fient","Mi","Freezer Jr.","Peat" };
+#define FF_FIRST_ID 41
+
+/* The AB+ table is empty in a Repentance run (players.xml fills another one), so the loader would walk nothing. Give it a
+ * vector with every id up to the last FF one: unnamed rows stay zero (the loader looks the empty name up, finds nothing, skips). */
+static void fill_table(void) {
+    unsigned long mgr = *(const unsigned long *) (g_base + MGR_PTR);
+    if (!mgr) return;
+    unsigned long *t = (unsigned long *) (mgr + CHAR_TABLE_BEGIN);
+    unsigned want = FF_FIRST_ID + 20;
+    unsigned have = (t[0] && t[1] >= t[0]) ? (unsigned) ((t[1] - t[0]) / CHAR_STRIDE) : 0;
+    if (have >= want) return;
+    unsigned char *v = calloc(want, CHAR_STRIDE);
+    if (!v) return;
+    if (have) memcpy(v, (void *) t[0], (size_t) have * CHAR_STRIDE);
+    for (int k = 0; k < 20; k++) make_short_string(v + (size_t) (FF_FIRST_ID + k) * CHAR_STRIDE + 8, FF_NAMES[k]);
+    t[0] = (unsigned long) v;                       /* the old block is left alone: it may be owned by someone else */
+    t[1] = (unsigned long) v + (size_t) want * CHAR_STRIDE;
+    if (t[2] < t[1]) t[2] = t[1];
+    LOG("ffmenu: character table was %u entries, now %u (names of the 20 FF characters at ids 41..60)", have, want);
+}
+
 static void w_load(unsigned long self) {
     o_load(self);
+    LOG("ffmenu: the content loader ran");
+    fill_table();
     unsigned n = table_count();
     if (n <= FIRST_MENU_CHAR) { LOG("ffmenu: the character table holds %u entries - nothing registered", n); return; }
     unsigned char dir[24];
