@@ -176,9 +176,12 @@ static void as_black(unsigned long p, int halves) {
     g_conv--;
 }
 
+static void poll_note(unsigned long p);
+
 static void w_max(unsigned long p, int halves, int ignore) {
-    if (halves > 0 && !g_conv && is_fiend(p)) { as_black(p, halves); return; }
+    if (halves > 0 && !g_conv && is_fiend(p)) { as_black(p, halves); poll_note(p); return; }
     o_max(p, halves, ignore);
+    poll_note(p);
 }
 
 static void w_red(unsigned long p, int halves, int flag) {
@@ -241,10 +244,57 @@ static void hit_makes_minions(unsigned long p, int before, unsigned mask, unsign
 static int g_minion_busy;
 
 static int g_hit_logs;
+static unsigned char *g_base;
+
+/*
+ * THE HIT, SEEN FROM OUTSIDE. In Repentance the damage code does not go through AddSoulHearts (the log of a real hit of a Fiend
+ * with 2 black + 1 immoral heart showed no soul loss at all), so the loss is also detected here: once per frame (called from
+ * ffminion's Pickup::Update wrapper) every player's soul halves are compared with what this file last saw. Every path of ours
+ * that changes them calls poll_note afterwards, so what is left is the game's own change - a hit.
+ */
+static struct { unsigned long p; int soul; unsigned black; int ok; } g_seen[MAX_PL];
+static void poll_note(unsigned long p) {
+    for (int i = 0; i < MAX_PL; i++)
+        if (g_seen[i].p == p || !g_seen[i].p) {
+            g_seen[i].p = p; g_seen[i].soul = soul_halves(p); g_seen[i].black = *(const unsigned *) (p + P_BLACK_MASK); g_seen[i].ok = 1;
+            return;
+        }
+}
+void ffheart_poll(void) {
+    if (!g_base || g_conv || g_minion_busy) return;
+    unsigned long game = *(const unsigned long *) (g_base + GAME_PTR);
+    if (!game) return;
+    const unsigned long *list = (const unsigned long *) (game + GAME_PLAYER_LIST);
+    if (!list[0] || list[1] < list[0]) return;
+    unsigned n = (unsigned) ((list[1] - list[0]) / 8);
+    for (unsigned i = 0; i < n && i < MAX_PL; i++) {
+        unsigned long p = ((unsigned long (*)(unsigned long, int)) (g_base + FN_PLAYER_AT))(game + GAME_PLAYERS, (int) i);
+        if (!p) continue;
+        int k = -1;
+        for (int j = 0; j < MAX_PL; j++) if (g_seen[j].p == p) { k = j; break; }
+        if (k < 0 || !g_seen[k].ok) { poll_note(p); continue; }
+        int before = g_seen[k].soul, now = soul_halves(p);
+        unsigned black_before = g_seen[k].black;
+        if (now == before) { g_seen[k].black = *(const unsigned *) (p + P_BLACK_MASK); continue; }
+        unsigned mask = *imm_slot(p);
+        if (g_hit_logs++ < 12)
+            LOG("ffheart: (seen from outside) soul %d -> %d, imm mask %#x, black mask %#x, room active %d, fiend %d",
+                before, now, mask, black_before, ffminion_room_active(), is_fiend(p));
+        if (now < before) {
+            imm_after(p, before, now, 0);
+            if (ffminion_room_active()) {
+                g_minion_busy++;
+                hit_makes_minions(p, before, mask, black_before);
+                g_minion_busy--;
+            }
+        }
+        poll_note(p);
+    }
+}
 static void w_soul(unsigned long p, int halves) {
     ff_flush();
     /* a Fiend's direct soul heart is black (his rule); an immoral pickup being collected is the one thing that is not */
-    if (halves > 0 && !g_conv && !g_immoral && is_fiend(p)) { as_black(p, halves); return; }
+    if (halves > 0 && !g_conv && !g_immoral && is_fiend(p)) { as_black(p, halves); poll_note(p); return; }
     int before = soul_halves(p);
     unsigned mask = *imm_slot(p), black = *(const unsigned *) (p + P_BLACK_MASK);
     o_soul(p, halves);
@@ -257,6 +307,7 @@ static void w_soul(unsigned long p, int halves) {
         hit_makes_minions(p, before, mask, black);
         g_minion_busy--;
     }
+    poll_note(p);
 }
 
 static void w_black(unsigned long p, int halves) {          /* calls AddSoulHearts inside */
@@ -264,6 +315,7 @@ static void w_black(unsigned long p, int halves) {          /* calls AddSoulHear
     g_conv++;
     o_black(p, halves);
     g_conv--;
+    poll_note(p);
     /* the run's start for a Fiend: his two black hearts are in, and ONE immoral heart (two halves) follows them */
     if (halves == 4 && before == 0 && is_fiend(p)) { g_immoral++; w_soul(p, 2); g_immoral--; }
 }
@@ -272,6 +324,7 @@ static void w_bone(unsigned long p, int wholes) {           /* calls AddSoulHear
     g_conv++;
     o_bone(p, wholes);
     g_conv--;
+    poll_note(p);
 }
 
 /* ------------------------------------------------------------------------------ the pickups (2b) */

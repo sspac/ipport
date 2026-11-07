@@ -359,10 +359,13 @@ static void minion_ai(unsigned long e) {
     if ((g_m[i].age + g_m[i].tick_off) % period == 0) contact_tick(e, owner, bonus);
 }
 
+void ffheart_poll(void) __attribute__((weak));       /* ffheart.c: sees a hit the game did not report */
+
 static void w_update(unsigned long e) {
     ff_flush();
     LOG_FEW(5, "ffminion: the Pickup::Update hook is running (first pickup: 5.%d.%d)", *(const int *) (e + E_VARIANT), *(const int *) (e + E_SUBTYPE));
     o_update(e);
+    if (ffheart_poll) ffheart_poll();
     if (*(const int *) (e + E_VARIANT) == V_MINION && *(const int *) (e + E_TYPE) == T_PICKUP && alive(e)) minion_ai(e);
 }
 

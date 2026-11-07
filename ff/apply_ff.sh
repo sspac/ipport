@@ -34,3 +34,4 @@ edit(C + 'loader.c',
      '        { void shim_ffmenu_install(unsigned char *); shim_ffmenu_install(im.base); }\n')
 print("fiend folio modules applied")
 PY
+python3 "$HERE/ffwatch_patch.py" "$CPP/pack.c"
