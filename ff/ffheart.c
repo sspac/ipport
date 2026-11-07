@@ -192,6 +192,7 @@ static void w_red(unsigned long p, int halves, int flag) {
 /* ------------------------------------------------------------------------------ the minions (customhealth.lua:643-820) */
 int ffminion_spawn(unsigned long player, int sub);   /* ffminion.c */
 int ffminion_room_active(void);
+void ffminion_room_info(int *a, int *b, int *d, int *targets);
 #define SUB_MINION_BLACK 1
 #define SUB_MINION_IMMORAL 2
 #define SUB_MINION_HALF 3
@@ -208,7 +209,10 @@ static int hp_of(int i, int halves) { return (i == (halves + 1) / 2 - 1 && (halv
  */
 static void hit_makes_minions(unsigned long p, int before, unsigned mask, unsigned black) {
     if (before <= 0) return;
-    int top = (before + 1) / 2 - 1;                         /* the heart the hit landed on */
+    /* the LAST heart the damage reached (CustomHealthAPI's wasLastDamaged): a half left over means the heart that is still
+     * there, hurt; an even count means the heart that was just emptied, which is the one above the remaining chain */
+    int after_h = soul_halves(p);
+    int top = (after_h & 1) ? (after_h + 1) / 2 - 1 : after_h / 2;
     int imm = top < 32 && ((mask >> top) & 1u);
     int blk = !imm && top < 32 && ((black >> top) & 1u) && is_fiend(p);
     if (!imm && !blk) return;
@@ -277,9 +281,12 @@ void ffheart_poll(void) {
         unsigned black_before = g_seen[k].black;
         if (now == before) { g_seen[k].black = *(const unsigned *) (p + P_BLACK_MASK); continue; }
         unsigned mask = *imm_slot(p);
-        if (g_hit_logs++ < 12)
-            LOG("ffheart: (seen from outside) soul %d -> %d, imm mask %#x, black mask %#x, room active %d, fiend %d",
-                before, now, mask, black_before, ffminion_room_active(), is_fiend(p));
+        if (g_hit_logs++ < 12) {
+            int ra, rb, rd, rt;
+            ffminion_room_info(&ra, &rb, &rd, &rt);
+            LOG("ffheart: (seen from outside) soul %d -> %d, imm mask %#x, black mask %#x, room active %d (counters %d %d, delay %d, enemies %d), fiend %d",
+                before, now, mask, black_before, ffminion_room_active(), ra, rb, rd, rt, is_fiend(p));
+        }
         if (now < before) {
             imm_after(p, before, now, 0);
             if (ffminion_room_active()) {

@@ -107,6 +107,41 @@ static void w_load(unsigned long self) {
     LOG("ffmenu: Fiend Folio's menu files registered from %s (character table: %u entries)", FF_MENU_DIR, n);
 }
 
+/*
+ * WHICH ANIMATION DOES THE MENU PLAY? The log of a real run showed the game asking for CharacterMenu.anm2, its FF sheet and
+ * CharacterPortraits.anm2 and the pack holding all of them, yet nothing is drawn for the FF characters. Sprite::Play
+ * (0x89e82c, (sprite, name, flag)) says what the menu asks for: here, once each, every animation named like an FF character
+ * or like "NN_Name" (how the menu names the vanilla ones). Diagnostic only; costs a string compare.
+ */
+typedef void (*fn_play)(void *, const char *, int);
+static fn_play o_play;
+static int g_play_logs;
+static char g_play_seen[96][40];
+static int g_play_seen_n;
+
+static int ieq(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        char x = (*a >= 'A' && *a <= 'Z') ? *a + 32 : *a, y = (*b >= 'A' && *b <= 'Z') ? *b + 32 : *b;
+        if (x != y) return 0;
+    }
+    return !*a && !*b;
+}
+static void watch_name(const char *name) {
+    if (!name || g_play_logs >= 90) return;
+    int hit = 0;
+    for (int k = 0; k < 20 && !hit; k++) hit = ieq(name, FF_NAMES[k]);
+    if (!hit && name[0] >= '0' && name[0] <= '9' && name[1] >= '0' && name[1] <= '9' && name[2] == '_') hit = 1;
+    if (!hit) return;
+    for (int i = 0; i < g_play_seen_n; i++) if (strncmp(g_play_seen[i], name, 39) == 0) return;
+    if (g_play_seen_n < 96) { strncpy(g_play_seen[g_play_seen_n], name, 39); g_play_seen[g_play_seen_n][39] = 0; g_play_seen_n++; }
+    g_play_logs++;
+    LOG("ffmenu: the game plays the animation \"%s\"", name);
+}
+static void w_play(void *sprite, const char *name, int flag) {
+    watch_name(name);
+    o_play(sprite, name, flag);
+}
+
 #ifndef FF_HOST_TEST
 static void real_register(unsigned long self, void *dir) {
     ((fn_register) (g_base + FN_REGISTER_DIR))(self, dir);
@@ -134,5 +169,22 @@ void shim_ffmenu_install(unsigned char *base) {
     o_load = (fn_load) page;
     shim_hook((void *) fn, (void *) w_load);
     LOG("ffmenu: the content loader is wrapped");
+    {   /* the animation watch */
+        static const uint32_t pw[4] = { 0xa9bd57f6u, 0xa9014ff4u, 0xa9027bfdu, 0x910083fdu };
+        const uint32_t *pf = (const uint32_t *) (base + 0x89e82c);
+        int ok = 1;
+        for (int k = 0; k < 4; k++) if (pf[k] != pw[k]) ok = 0;
+        uint8_t *pg = ok ? mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0) : MAP_FAILED;
+        if (pg != MAP_FAILED) {
+            memcpy(pg, pf, 16);
+            shim_hook(pg + 16, (void *) (pf + 4));
+            if (mprotect(pg, 4096, PROT_READ | PROT_EXEC) == 0) {
+                __builtin___clear_cache((char *) pg, (char *) pg + 32);
+                o_play = (fn_play) pg;
+                shim_hook((void *) pf, (void *) w_play);
+                LOG("ffmenu: the animation watch is on");
+            } else munmap(pg, 4096);
+        } else LOG("ffmenu: Sprite::Play does not start as measured - no animation watch");
+    }
 }
 #endif

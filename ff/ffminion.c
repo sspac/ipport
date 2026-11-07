@@ -142,13 +142,30 @@ static unsigned long real_room(void) {
 }
 static unsigned long (*g_room)(void) = real_room;
 
-/* the game's own idea of an active room: enemies counted, or the clear delay still running */
-int ffminion_room_active(void) {
+static int is_target(unsigned long e);
+static unsigned snapshot(unsigned long *out);
+
+/*
+ * Is the room being fought in (Fiend Folio: room:IsAmbushActive() or not room:IsClear())? Measured two ways, either is enough:
+ * the room's own counters (spawner.c's arena code uses them) and the entities themselves - any NPC the game calls an active,
+ * vulnerable, non-friendly enemy. The second does not depend on a field offset, which a real run showed can read 0 with enemies
+ * standing in the room.
+ */
+void ffminion_room_info(int *a, int *b, int *d, int *targets) {
+    *a = *b = *d = *targets = 0;
     unsigned long room = g_room();
-    if (!room) return 0;
-    int a = *(const int *) (room + ROOM_ENEMIES_A), b = *(const int *) (room + ROOM_ENEMIES_B);
-    int d = *(const int *) (room + ROOM_CLEAR_DELAY);
-    return a + b > 0 || (d >= 1 && d <= 10);
+    if (room) {
+        *a = *(const int *) (room + ROOM_ENEMIES_A); *b = *(const int *) (room + ROOM_ENEMIES_B);
+        *d = *(const int *) (room + ROOM_CLEAR_DELAY);
+    }
+    unsigned long snap[256];
+    unsigned n = snapshot(snap);
+    for (unsigned i = 0; i < n; i++) if (is_target(snap[i])) (*targets)++;
+}
+int ffminion_room_active(void) {
+    int a, b, d, t;
+    ffminion_room_info(&a, &b, &d, &t);
+    return a + b > 0 || (d >= 1 && d <= 10) || t > 0;
 }
 
 /* a snapshot of the room's entities (the list may change while we hit things) */
