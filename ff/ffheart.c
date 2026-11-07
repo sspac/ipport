@@ -215,7 +215,12 @@ static void hit_makes_minions(unsigned long p, int before, unsigned mask, unsign
     int top = (after_h & 1) ? (after_h + 1) / 2 - 1 : after_h / 2;
     int imm = top < 32 && ((mask >> top) & 1u);
     int blk = !imm && top < 32 && ((black >> top) & 1u) && is_fiend(p);
-    if (!imm && !blk) return;
+    static int outcome_logs;
+    if (!imm && !blk) {
+        if (outcome_logs++ < 300)
+            LOG("ffheart: hit -> the last heart reached (#%d of %d) is neither immoral nor black (imm mask %#x, black mask %#x): no minions", top, (after_h + 1) / 2, mask, black);
+        return;
+    }
     int minions = 0;                                        /* halves */
     unsigned *mp = imm_slot(p);
     for (;;) {
@@ -238,6 +243,8 @@ static void hit_makes_minions(unsigned long p, int before, unsigned mask, unsign
         g_conv++; o_black(p, 1); g_conv--;
         minions -= 1;
     }
+    if (outcome_logs++ < 300)
+        LOG("ffheart: hit -> the last heart reached (#%d) is %s: %d halves become minions", top, imm ? "immoral" : "black", minions);
     for (; minions > 0; minions -= 2) {
         if (imm)      ffminion_spawn(p, minions >= 2 ? SUB_MINION_IMMORAL : SUB_MINION_HALF);
         else if (minions >= 2) ffminion_spawn(p, SUB_MINION_BLACK);
@@ -279,9 +286,15 @@ void ffheart_poll(void) {
         if (k < 0 || !g_seen[k].ok) { poll_note(p); continue; }
         int before = g_seen[k].soul, now = soul_halves(p);
         unsigned black_before = g_seen[k].black;
-        if (now == before) { g_seen[k].black = *(const unsigned *) (p + P_BLACK_MASK); continue; }
+        if (now == before) {
+            g_seen[k].black = *(const unsigned *) (p + P_BLACK_MASK);
+            unsigned *mk = imm_slot(p);
+            int hearts = (now + 1) / 2;                           /* a bit above the top heart belongs to nothing: drop it */
+            if (*mk && hearts < 32 && (*mk >> hearts)) { LOG("ffheart: stale immoral bits above heart %d dropped (mask %#x)", hearts, *mk); *mk &= (1u << hearts) - 1u; }
+            continue;
+        }
         unsigned mask = *imm_slot(p);
-        if (g_hit_logs++ < 12) {
+        if (g_hit_logs++ < 300) {
             int ra, rb, rd, rt;
             ffminion_room_info(&ra, &rb, &rd, &rt);
             LOG("ffheart: (seen from outside) soul %d -> %d, imm mask %#x, black mask %#x, room active %d (counters %d %d, delay %d, enemies %d), fiend %d",
@@ -297,6 +310,33 @@ void ffheart_poll(void) {
         }
         poll_note(p);
     }
+}
+
+/*
+ * WHAT DRIVES THE POLL. The first version ran it from ffminion's Pickup::Update wrapper, which only runs while a pickup is in
+ * the room: a real run of a Fiend taking spikes in the sacrifice room (no pickups there) lost almost five hearts and the
+ * log held nothing. So the poll now also hangs on the player's own Update (virtual slot 4 of the Player class, the slot that is
+ * Pickup::Update for pickups - measured there), found at run time from a player object: the first time ffchars sees one.
+ */
+typedef void (*fn_entity_update)(unsigned long);
+static fn_entity_update o_player_update;
+static void w_player_update(unsigned long e) {
+    o_player_update(e);
+    ffheart_poll();
+}
+void ffheart_see_player(unsigned long p) {
+    if (o_player_update || !g_base || !p) return;
+    unsigned long *vt = *(unsigned long **) p;
+    if (!vt) return;
+    unsigned long v = vt[4];
+    if (v < (unsigned long) g_base + 0x100000 || v >= (unsigned long) g_base + 0x9a0000) {
+        LOG("ffheart: the player's vtable slot 4 holds %lx, not code - the poll stays on the pickups only", v);
+        return;
+    }
+    if (v == (unsigned long) g_base + 0x7193a4) { LOG("ffheart: the player shares the pickup's Update - poll left on the pickups"); return; }
+    o_player_update = (fn_entity_update) v;
+    vt[4] = (unsigned long) w_player_update;
+    LOG("ffheart: the poll now also runs on the player's Update (vtable %lx slot 4)", (unsigned long) vt);
 }
 static void w_soul(unsigned long p, int halves) {
     ff_flush();
@@ -403,6 +443,7 @@ static unsigned long w_spawn(unsigned long game, int type, int variant, const fl
                              unsigned long spawner, int subtype, int seed, int flag) {
     unsigned long e = o_spawn(game, type, variant, pos, vel, spawner, subtype, seed, flag);
     if (!e || g_in_spawn || type != PICKUP || variant != V_HEART) return e;
+    if (g_spawn_logs < 60 && !g_fiend_luck(&(float){0})) LOG("ffheart: a heart pickup 5.10.%d was spawned but no Fiend is in the room: it stays", *(const int *) (e + E_SUBTYPE));
     float luck;
     if (!g_fiend_luck(&luck)) return e;
     int nv, ns;
@@ -411,6 +452,7 @@ static unsigned long w_spawn(unsigned long game, int type, int variant, const fl
     unsigned long ne = o_spawn(game, PICKUP, nv, pos, vel, spawner, ns, seed, flag);
     g_in_spawn--;
     if (!ne) return e;                                      /* could not be made: the heart stays as it was */
+    if (g_spawn_logs++ < 60) LOG("ffheart: Fiend heart pickup 5.10.%d became 5.%d.%d (luck %.1f)", *(const int *) (e + E_SUBTYPE), nv, ns, (double) luck);
     *(unsigned char *) (e + E_DEAD) = 1;                    /* the first one is withdrawn */
     *(unsigned char *) (e + E_EXISTS) = 0;
     return ne;

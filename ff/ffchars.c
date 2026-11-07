@@ -252,6 +252,7 @@ static void ff_apply(unsigned long p, const ff_char_t *c, unsigned fl) {
 static void ff_evaluate(unsigned long p) {
     unsigned fl = *(const unsigned *) (p + PLAYER_CACHE_FLAGS);     /* before the original clears it */
     g_eval(p);
+    { extern void ffheart_see_player(unsigned long) __attribute__((weak)); if (ffheart_see_player) ffheart_see_player(p); }
     static int last_type = -999;
     int ty = *(const int *) (p + PLAYER_TYPE);
     if (ty != last_type) { last_type = ty; LOG("ffchars: a player is character %d (FF ones are %d..%d)", ty, FF_FIRST, FF_FIRST + FF_COUNT - 1); }

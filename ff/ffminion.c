@@ -142,8 +142,8 @@ static unsigned long real_room(void) {
 }
 static unsigned long (*g_room)(void) = real_room;
 
-static int is_target(unsigned long e);
 static unsigned snapshot(unsigned long *out);
+static int target_level(const unsigned long *snap, unsigned n, int *count);
 
 /*
  * Is the room being fought in (Fiend Folio: room:IsAmbushActive() or not room:IsClear())? Measured two ways, either is enough:
@@ -160,7 +160,7 @@ void ffminion_room_info(int *a, int *b, int *d, int *targets) {
     }
     unsigned long snap[256];
     unsigned n = snapshot(snap);
-    for (unsigned i = 0; i < n; i++) if (is_target(snap[i])) (*targets)++;
+    target_level(snap, n, targets);
 }
 int ffminion_room_active(void) {
     int a, b, d, t;
@@ -187,12 +187,27 @@ static int vcall(unsigned long e, int off) {
     const unsigned long *vt = *(const unsigned long *const *) e;
     return vt ? ((fn_pred) vt[off / 8])(e) : 0;
 }
-static int is_target(unsigned long e) {
+/* How sure we are that `e` is an enemy a minion should fight. A real run of the first version found 0 targets in rooms the
+ * game itself counted enemies in (counters 0 4), so the minions had nothing to chase: the two virtual questions (IsActiveEnemy
+ * slot 18, IsVulnerable slot 19) or the flags are not trustworthy for every NPC. Three levels, the first that finds anyone wins:
+ *   2 both questions answer yes   1 either does   0 any living, non-friendly NPC that is not poop or a fireplace */
+static int target_ok(unsigned long e, int level) {
     if (!alive(e)) return 0;
     int type = *(const int *) (e + E_TYPE);
     if (type < 10 || type >= 1000) return 0;                  /* NPCs only: players, tears, pickups, effects are not targets */
     if (*(const unsigned long long *) (e + E_FLAGS) & FLAG_FRIENDLY) return 0;
-    return vcall(e, VT_ACTIVE_ENEMY) && vcall(e, VT_VULNERABLE);
+    if (level == 0) return type != 33 && type != 245;
+    int a = vcall(e, VT_ACTIVE_ENEMY), v = vcall(e, VT_VULNERABLE);
+    return level == 2 ? (a && v) : (a || v);
+}
+static int target_level(const unsigned long *snap, unsigned n, int *count) {
+    for (int lvl = 2; lvl >= 0; lvl--) {
+        int c = 0;
+        for (unsigned i = 0; i < n; i++) if (target_ok(snap[i], lvl)) c++;
+        if (c) { if (count) *count = c; return lvl; }
+    }
+    if (count) *count = 0;
+    return -1;
 }
 
 static int hit_enemy(unsigned long e, float damage) {
@@ -208,7 +223,8 @@ static int hit_enemy(unsigned long e, float damage) {
 enum { S_DROP = 0, S_ACTIVE = 1, S_TRANSFORM = 2 };
 static struct {
     unsigned long e, owner, target;
-    int age, state, tick_off, head, tstart;
+    int age, state, tick_off, head, tstart, moved_set, carried;
+    float lastx, lasty, lvx, lvy;
 } g_m[MAXM];
 
 static struct { unsigned long e; long long born; } g_crit[16];
@@ -301,9 +317,10 @@ static unsigned long pick_target(unsigned long e, unsigned long owner) {
     unsigned n = snapshot(snap);
     unsigned long best = 0;
     float bd = CHASE_RANGE * CHASE_RANGE;
-    for (unsigned i = 0; i < n; i++) {
+    int lvl = target_level(snap, n, 0);
+    for (unsigned i = 0; lvl >= 0 && i < n; i++) {
         unsigned long c = snap[i];
-        if (c == e || !is_target(c)) continue;
+        if (c == e || !target_ok(c, lvl)) continue;
         float dx = fpos(c)[0] - fpos(e)[0], dy = fpos(c)[1] - fpos(e)[1], d = dx * dx + dy * dy;
         if (d < bd) { bd = d; best = c; }
     }
@@ -314,9 +331,10 @@ static void contact_tick(unsigned long e, unsigned long owner, int bonus) {
     float damage = *(const float *) (owner + P_DAMAGE), luck = *(const float *) (owner + P_LUCK);
     unsigned long snap[SNAP];
     unsigned n = snapshot(snap);
-    for (unsigned i = 0; i < n; i++) {
+    int lvl = target_level(snap, n, 0);
+    for (unsigned i = 0; lvl >= 0 && i < n; i++) {
         unsigned long c = snap[i];
-        if (c == e || !is_target(c)) continue;                /* re-checked here: an earlier hit may have killed it */
+        if (c == e || !target_ok(c, lvl)) continue;           /* re-checked here: an earlier hit may have killed it */
         float dx = fpos(c)[0] - fpos(e)[0], dy = fpos(c)[1] - fpos(e)[1];
         float reach = fsize(c) + fsize(e);
         if (dx * dx + dy * dy > reach * reach) continue;
@@ -361,6 +379,13 @@ static void minion_ai(unsigned long e) {
     g_m[i].target = t;
 
     float speed = ffminion_speed(*(const float *) (owner + P_MOVE_SPEED));
+    /* if the engine did not carry the minion along its velocity since the last frame, carry it here (a real run showed minions
+     * that never moved although the AI ran) */
+    if (g_m[i].moved_set) {
+        float mx = fpos(e)[0] - g_m[i].lastx, my = fpos(e)[1] - g_m[i].lasty;
+        float lv = __builtin_sqrtf(g_m[i].lvx * g_m[i].lvx + g_m[i].lvy * g_m[i].lvy);
+        if (lv > 0.5f && mx * mx + my * my < 0.01f) { fpos(e)[0] += g_m[i].lvx; fpos(e)[1] += g_m[i].lvy; g_m[i].carried++; }
+    }
     if (t && g_m[i].age % 2 == 0) {
         float dx = fpos(t)[0] - fpos(e)[0], dy = fpos(t)[1] - fpos(e)[1];
         float len = __builtin_sqrtf(dx * dx + dy * dy);
@@ -372,6 +397,11 @@ static void minion_ai(unsigned long e) {
         float ax = v[0] < 0 ? -v[0] : v[0], ay = v[1] < 0 ? -v[1] : v[1];
         g_play(sprite, ax > ay ? "WalkHori" : "WalkVert", 0);
     }
+    g_m[i].lastx = fpos(e)[0]; g_m[i].lasty = fpos(e)[1]; g_m[i].lvx = v[0]; g_m[i].lvy = v[1]; g_m[i].moved_set = 1;
+    if (g_m[i].age == 90 || g_m[i].age == 240)
+        LOG("ffminion: minion %d at age %d: pos %.0f,%.0f vel %.2f,%.2f speed %.2f target %s (type %d) carried-by-us %d times, room active %d",
+            i, g_m[i].age, fpos(e)[0], fpos(e)[1], v[0], v[1], speed, t == owner ? "the owner" : (t ? "an enemy" : "none"),
+            t ? *(const int *) (t + E_TYPE) : -1, g_m[i].carried, ffminion_room_active());
     int period = ffminion_period(*(const float *) (owner + P_FIRE_DELAY));
     if ((g_m[i].age + g_m[i].tick_off) % period == 0) contact_tick(e, owner, bonus);
 }
