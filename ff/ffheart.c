@@ -479,9 +479,15 @@ static int w_collide(unsigned long pk, unsigned long other, int low) {
     int immoral = variant == V_IMMORAL || variant == V_HALF_IMMORAL || variant == V_BLENDED_IMMORAL;
     *(int *) (pk + E_VARIANT) = V_HEART;
     *(int *) (pk + E_SUBTYPE) = sub;
+    int soul_before = soul_halves(other);
     if (immoral) g_immoral++;
     int r = o_collide(pk, other, low);
     if (immoral) g_immoral--;
+    if (immoral && soul_halves(other) > soul_before) {      /* whatever path the game took to add it, the new hearts are immoral */
+        imm_after(other, soul_before, soul_halves(other), 1);
+        poll_note(other);
+        { static int n; if (n++ < 20) LOG("ffheart: an immoral heart was collected: soul %d -> %d, imm mask %#x", soul_before, soul_halves(other), *imm_slot(other)); }
+    }
     if (!*(const unsigned char *) (pk + E_DEAD)) {          /* not taken: it is what it was */
         *(int *) (pk + E_VARIANT) = variant;
         *(int *) (pk + E_SUBTYPE) = was;

@@ -23,6 +23,7 @@
  * The log (tag "isaac", lines "ffcharmenu:") says what was made and whether the load worked.
  */
 #include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -61,20 +62,21 @@ static unsigned char *g_base;
 static fn_menu o_update;
 static int g_done, g_logs;
 
-static void *make_sprite(const char *path) {
-    unsigned char *s = calloc(1, SPRITE_BYTES);
-    if (!s) return 0;
-    ((fn_ctor) (g_base + FN_SPRITE_CTOR))(s);
-    unsigned char str[24];
-    memset(str, 0, sizeof str);
-    ((fn_str) (g_base + FN_STRING_CTOR))(str, path);          /* the string the screen's own loads use; leaked on purpose: 1 per sprite */
-    ((fn_load) (g_base + FN_SPRITE_LOAD))(s, str, 1);
-    return s;
-}
+/*
+ * A first version made its own Sprites for the records and the game CRASHED on the first draw of the ring (CRASH at 0x89d630,
+ * called from 0x89e530 <- 0x775a50 <- 0x5e9670: the layer loop read sprite[0]+0xa8 with sprite[0] == 0): a Sprite made by hand
+ * was not complete. So now the records point at the two Sprites the select screen has ALREADY loaded and draws with itself:
+ * m+0x78 (CharacterMenu.anm2, the centre picture) and m+0xf60 (CharacterPortraits.anm2, the ring). The pack's copies of those
+ * files carry the Fiend Folio animations ("Fiend", "Golem"...), so the engine plays them like any other character's.
+ */
+#define M_CENTRE 0x78
+#define M_RING   0xf60
 
-static void fill(void) {
+static void fill(unsigned long m) {
     unsigned long mgr = *(const unsigned long *) (g_base + MGR_PTR);
-    if (!mgr) return;
+    if (!mgr || !m) return;
+    unsigned long centre_sprite = m + M_CENTRE, ring_sprite = m + M_RING;
+    if (!*(const unsigned long *) centre_sprite || !*(const unsigned long *) ring_sprite) return;     /* not loaded (yet): do nothing */
     unsigned long table = mgr + TABLE_OFF;
     int made = 0, seen = 0;
     for (unsigned id = FF_FIRST; id < FF_FIRST + FF_COUNT; id++) {
@@ -82,18 +84,42 @@ static void fill(void) {
         if (!rec) continue;
         seen++;
         unsigned long *centre = (unsigned long *) (rec + R_CENTRE), *ring = (unsigned long *) (rec + R_RING);
-        if (*centre && *ring) continue;
-        int alt = is_alt(id);
-        if (!*centre) *centre = (unsigned long) make_sprite(alt ? "gfx/ui/main menu/charactermenualt.anm2" : "gfx/ui/main menu/charactermenu.anm2");
-        if (!*ring) *ring = (unsigned long) make_sprite(alt ? "gfx/ui/main menu/characterportraitsalt.anm2" : "gfx/ui/main menu/characterportraits.anm2");
+        if (*centre == centre_sprite && *ring == ring_sprite) continue;
+        *centre = centre_sprite; *ring = ring_sprite;
         made++;
     }
-    if (made && g_logs++ < 4) LOG("ffcharmenu: gave %d of %d Fiend Folio records their centre and ring sprites", made, seen);
+    if (made && g_logs++ < 4) LOG("ffcharmenu: %d of %d Fiend Folio records now use the screen's own centre (m+0x78) and ring (m+0xf60) sprites", made, seen);
     if (seen == FF_COUNT && !made) g_done = 1;
 }
 
+/* DIAGNOSTIC, once: where the select screen keeps its other Sprites (the tainted/alt ones are not referenced by string in the
+ * screen's init). A Sprite's first qword is its .anm2 data, shared by every Sprite loaded from the same file, so: which offsets
+ * hold the same data as m+0x78 (CharacterMenu) and m+0xf60 (CharacterPortraits), and then every non-zero qword of the object. */
+static int g_dumped;
+static void dump_menu(unsigned long m) {
+    if (g_dumped || !*(const unsigned long *) (m + M_RING) || !*(const unsigned long *) (m + M_CENTRE)) return;
+    g_dumped = 1;
+    unsigned long dm = *(const unsigned long *) (m + M_CENTRE), dp = *(const unsigned long *) (m + M_RING);
+    char line[512]; int n = 0; line[0] = 0;
+    for (unsigned off = 0x40; off < 0x1700; off += 8) {
+        unsigned long v = *(const unsigned long *) (m + off);
+        if (v == dm || v == dp) n += snprintf(line + n, sizeof line - n, " %#x=%s", off, v == dm ? "MENU" : "PORT");
+        if (n > 400) { LOG("ffcharmenu: dump same-anm2 offsets:%s", line); n = 0; line[0] = 0; }
+    }
+    if (n) LOG("ffcharmenu: dump same-anm2 offsets:%s", line);
+    n = 0; line[0] = 0;
+    for (unsigned off = 0x40; off < 0x1700; off += 8) {
+        unsigned long v = *(const unsigned long *) (m + off);
+        if (!v) continue;
+        n += snprintf(line + n, sizeof line - n, " %x:%lx", off, v);
+        if (n > 400) { LOG("ffcharmenu: dump%s", line); n = 0; line[0] = 0; }
+    }
+    if (n) LOG("ffcharmenu: dump%s", line);
+}
+
 static void w_update(unsigned long m) {
-    if (!g_done) fill();
+    dump_menu(m);
+    if (!g_done) fill(m);
     o_update(m);
 }
 

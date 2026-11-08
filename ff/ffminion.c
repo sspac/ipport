@@ -224,7 +224,7 @@ enum { S_DROP = 0, S_ACTIVE = 1, S_TRANSFORM = 2 };
 static struct {
     unsigned long e, owner, target;
     int age, state, tick_off, head, tstart, moved_set, carried;
-    float lastx, lasty, lvx, lvy;
+    float lastx, lasty, lvx, lvy, tmp[2];
 } g_m[MAXM];
 
 static struct { unsigned long e; long long born; } g_crit[16];
@@ -379,25 +379,26 @@ static void minion_ai(unsigned long e) {
     g_m[i].target = t;
 
     float speed = ffminion_speed(*(const float *) (owner + P_MOVE_SPEED));
-    /* if the engine did not carry the minion along its velocity since the last frame, carry it here (a real run showed minions
-     * that never moved although the AI ran) */
-    if (g_m[i].moved_set) {
-        float mx = fpos(e)[0] - g_m[i].lastx, my = fpos(e)[1] - g_m[i].lasty;
-        float lv = __builtin_sqrtf(g_m[i].lvx * g_m[i].lvx + g_m[i].lvy * g_m[i].lvy);
-        if (lv > 0.5f && mx * mx + my * my < 0.01f) { fpos(e)[0] += g_m[i].lvx; fpos(e)[1] += g_m[i].lvy; g_m[i].carried++; }
-    }
-    if (t && g_m[i].age % 2 == 0) {
+    /* THE MINION MOVES ITSELF: the engine did not move a pickup along its velocity in real runs (the minions stood still with
+     * the AI running), so the steering keeps its own velocity (lvx, lvy), steers it every frame toward the target (Lua:
+     * Lerp(vel, dir*speed, 0.3)) and adds it to the position here; the engine's own velocity is kept at 0 so nothing moves it twice */
+    if (t) {
         float dx = fpos(t)[0] - fpos(e)[0], dy = fpos(t)[1] - fpos(e)[1];
         float len = __builtin_sqrtf(dx * dx + dy * dy);
         if (len > 0.001f) { dx = dx / len * speed; dy = dy / len * speed; }
-        v[0] += (dx - v[0]) * 0.3f;                           /* Lerp(vel, dir*speed, 0.3) */
-        v[1] += (dy - v[1]) * 0.3f;
-    }
+        if (t == owner && len < 40.0f) { dx = 0; dy = 0; }      /* nothing to fight: wait beside the owner */
+        g_m[i].lvx += (dx - g_m[i].lvx) * 0.3f;
+        g_m[i].lvy += (dy - g_m[i].lvy) * 0.3f;
+    } else { g_m[i].lvx *= 0.8f; g_m[i].lvy *= 0.8f; }
+    fpos(e)[0] += g_m[i].lvx; fpos(e)[1] += g_m[i].lvy; g_m[i].carried++;
+    v[0] = 0; v[1] = 0;
+    v = g_m[i].tmp;                                           /* the animation choice below reads our velocity */
+    v[0] = g_m[i].lvx; v[1] = g_m[i].lvy;
     {
         float ax = v[0] < 0 ? -v[0] : v[0], ay = v[1] < 0 ? -v[1] : v[1];
         g_play(sprite, ax > ay ? "WalkHori" : "WalkVert", 0);
     }
-    g_m[i].lastx = fpos(e)[0]; g_m[i].lasty = fpos(e)[1]; g_m[i].lvx = v[0]; g_m[i].lvy = v[1]; g_m[i].moved_set = 1;
+    g_m[i].moved_set = 1;
     if (g_m[i].age == 90 || g_m[i].age == 240)
         LOG("ffminion: minion %d at age %d: pos %.0f,%.0f vel %.2f,%.2f speed %.2f target %s (type %d) carried-by-us %d times, room active %d",
             i, g_m[i].age, fpos(e)[0], fpos(e)[1], v[0], v[1], speed, t == owner ? "the owner" : (t ? "an enemy" : "none"),
