@@ -506,8 +506,10 @@ static const char NAME_IMMORAL_HALF[] = "ImmoralHeartHalf";
 static void w_layout(unsigned long layout, unsigned char *slots, int count, unsigned long player) {
     o_layout(layout, slots, count, player);
     if (!slots || count <= 0 || count > 64 || !g_base) return;
-    unsigned *mp = imm_slot(player);
-    *mp = keep_hearts(*mp, (soul_halves(player) + 1) / 2);  /* only the hearts that are there */
+    /* the mask is only READ here. It used to be trimmed to the hearts that are left, and since the bar is drawn right after a hit and
+     * before the hit is seen, the bit of a heart the hit had just emptied was lost: a half immoral heart at the top never made minions */
+    unsigned mine = keep_hearts(*imm_slot(player), (soul_halves(player) + 1) / 2);
+    unsigned *mp = &mine;
     if (!*mp) return;
     const char *bh = (const char *) (g_base + STR_BLUE_HALF), *bf = (const char *) (g_base + STR_BLUE_FULL);
     const char *kh = (const char *) (g_base + STR_BLACK_HALF), *kf = (const char *) (g_base + STR_BLACK_FULL);

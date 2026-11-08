@@ -61,6 +61,7 @@ typedef void (*fn_str)(void *, const char *);
 static unsigned char *g_base;
 static fn_menu o_update;
 static int g_done, g_logs;
+static unsigned long g_alt_centre, g_alt_ring;
 
 /*
  * A first version made its own Sprites for the records and the game CRASHED on the first draw of the ring (CRASH at 0x89d630,
@@ -84,41 +85,61 @@ static void fill(unsigned long m) {
         if (!rec) continue;
         seen++;
         unsigned long *centre = (unsigned long *) (rec + R_CENTRE), *ring = (unsigned long *) (rec + R_RING);
-        if (*centre == centre_sprite && *ring == ring_sprite) continue;
-        *centre = centre_sprite; *ring = ring_sprite;
+        unsigned long wc = centre_sprite, wr = ring_sprite;
+        if (is_alt(id) && g_alt_centre) { wc = g_alt_centre; wr = g_alt_ring; }
+        if (*centre == wc && *ring == wr) continue;
+        *centre = wc; *ring = wr;
         made++;
     }
     if (made && g_logs++ < 4) LOG("ffcharmenu: %d of %d Fiend Folio records now use the screen's own centre (m+0x78) and ring (m+0xf60) sprites", made, seen);
-    if (seen == FF_COUNT && !made) g_done = 1;
 }
 
-/* DIAGNOSTIC, once: where the select screen keeps its other Sprites (the tainted/alt ones are not referenced by string in the
- * screen's init). A Sprite's first qword is its .anm2 data, shared by every Sprite loaded from the same file, so: which offsets
- * hold the same data as m+0x78 (CharacterMenu) and m+0xf60 (CharacterPortraits), and then every non-zero qword of the object. */
-static int g_dumped;
-static void dump_menu(unsigned long m) {
-    if (g_dumped || !*(const unsigned long *) (m + M_RING) || !*(const unsigned long *) (m + M_CENTRE)) return;
-    g_dumped = 1;
-    unsigned long dm = *(const unsigned long *) (m + M_CENTRE), dp = *(const unsigned long *) (m + M_RING);
-    char line[512]; int n = 0; line[0] = 0;
-    for (unsigned off = 0x40; off < 0x1700; off += 8) {
-        unsigned long v = *(const unsigned long *) (m + off);
-        if (v == dm || v == dp) n += snprintf(line + n, sizeof line - n, " %#x=%s", off, v == dm ? "MENU" : "PORT");
-        if (n > 400) { LOG("ffcharmenu: dump same-anm2 offsets:%s", line); n = 0; line[0] = 0; }
+/*
+ * THE ALT (TAINTED) SPRITES. The screen loads CharacterMenuAlt.anm2 / CharacterPortraitsAlt.anm2 only when the player first switches
+ * to the alt page (the log shows the game asking for them then, long after "Menu Character Init"), and the dump taken when the screen
+ * opened found them nowhere in the object. So: remember every Sprite-looking block of the object at the start (a Sprite has
+ * 0x8000000000000030 at +0x10 and its .anm2 data at +0), and when the variant (m+0x1298) first turns alt, look again: two new
+ * blocks 0x158 apart are the alt centre picture and ring (the order the game loads them in). Nothing is assumed beyond that
+ * shape; if it is not found, the log lists what was seen and the tainted records keep the normal sprites.
+ */
+#define M_VARIANT 0x1298
+#define SPRITE_SHAPE 0x8000000000000030ul
+#define MAX_KNOWN 48
+static unsigned g_known[MAX_KNOWN], g_nknown;
+static int g_alt_tried, g_alt_logs;
+
+static unsigned find_sprites(unsigned long m, unsigned *out, unsigned max) {
+    unsigned n = 0;
+    for (unsigned off = 0x40; off + 0x20 < 0x1700 && n < max; off += 8) {
+        if (*(const unsigned long *) (m + off + 0x10) == SPRITE_SHAPE && *(const unsigned long *) (m + off)) out[n++] = off;
     }
-    if (n) LOG("ffcharmenu: dump same-anm2 offsets:%s", line);
-    n = 0; line[0] = 0;
-    for (unsigned off = 0x40; off < 0x1700; off += 8) {
-        unsigned long v = *(const unsigned long *) (m + off);
-        if (!v) continue;
-        n += snprintf(line + n, sizeof line - n, " %x:%lx", off, v);
-        if (n > 400) { LOG("ffcharmenu: dump%s", line); n = 0; line[0] = 0; }
+    return n;
+}
+static int is_known(unsigned off) { for (unsigned i = 0; i < g_nknown; i++) if (g_known[i] == off) return 1; return 0; }
+
+static void watch_alt(unsigned long m) {
+    if (!g_nknown) {
+        g_nknown = find_sprites(m, g_known, MAX_KNOWN);
+        if (g_alt_logs++ < 3) LOG("ffcharmenu: %u sprite blocks known when the screen opened", g_nknown);
+        return;
     }
-    if (n) LOG("ffcharmenu: dump%s", line);
+    if (g_alt_centre || g_alt_tried > 600) return;
+    if (*(const int *) (m + M_VARIANT) == 0) return;
+    g_alt_tried++;
+    unsigned now[MAX_KNOWN]; unsigned n = find_sprites(m, now, MAX_KNOWN), fresh[8], nf = 0;
+    for (unsigned i = 0; i < n && nf < 8; i++) if (!is_known(now[i])) fresh[nf++] = now[i];
+    if (nf >= 2 && fresh[1] - fresh[0] == 0x158) {
+        g_alt_centre = m + fresh[0]; g_alt_ring = m + fresh[1];
+        LOG("ffcharmenu: the alt page's sprites are at m+%#x (centre) and m+%#x (ring)", fresh[0], fresh[1]);
+    } else if (g_alt_tried == 30 || g_alt_tried == 300) {
+        char line[200]; int k = 0; line[0] = 0;
+        for (unsigned i = 0; i < nf; i++) k += snprintf(line + k, sizeof line - k, " %#x", fresh[i]);
+        LOG("ffcharmenu: alt page open, %u new sprite blocks:%s - not the expected pair, tainted records keep the normal sprites", nf, line);
+    }
 }
 
 static void w_update(unsigned long m) {
-    dump_menu(m);
+    watch_alt(m);
     if (!g_done) fill(m);
     o_update(m);
 }

@@ -103,7 +103,7 @@ typedef unsigned long (*fn_spawn)(unsigned long, int, int, const float *, const 
 typedef void (*fn_play)(void *, const char *, int);
 typedef void (*fn_overlay)(void *, const char *, int);
 typedef int (*fn_take)(unsigned long, float, unsigned long long, void *, int);
-typedef int (*fn_pred)(unsigned long);
+typedef unsigned char (*fn_pred)(unsigned long);       /* a C++ bool comes back in the low byte only */
 
 static unsigned char *g_base;
 static fn_update o_update;
@@ -165,7 +165,7 @@ void ffminion_room_info(int *a, int *b, int *d, int *targets) {
 int ffminion_room_active(void) {
     int a, b, d, t;
     ffminion_room_info(&a, &b, &d, &t);
-    return a + b > 0 || (d >= 1 && d <= 10) || t > 0;
+    return a + b > 0 || (d >= 1 && d <= 10) || t > 0;      /* t counts only real enemies now (level 2 or 1), never spikes */
 }
 
 /* a snapshot of the room's entities (the list may change while we hit things) */
@@ -185,7 +185,7 @@ static unsigned snapshot(unsigned long *out) {
 static int alive(unsigned long e) { return *(const unsigned char *) (e + E_EXISTS) && !*(const unsigned char *) (e + E_DEAD); }
 static int vcall(unsigned long e, int off) {
     const unsigned long *vt = *(const unsigned long *const *) e;
-    return vt ? ((fn_pred) vt[off / 8])(e) : 0;
+    return vt ? (((fn_pred) vt[off / 8])(e) & 1) : 0;
 }
 /* How sure we are that `e` is an enemy a minion should fight. A real run of the first version found 0 targets in rooms the
  * game itself counted enemies in (counters 0 4), so the minions had nothing to chase: the two virtual questions (IsActiveEnemy
@@ -201,7 +201,7 @@ static int target_ok(unsigned long e, int level) {
     return level == 2 ? (a && v) : (a || v);
 }
 static int target_level(const unsigned long *snap, unsigned n, int *count) {
-    for (int lvl = 2; lvl >= 0; lvl--) {
+    for (int lvl = 2; lvl >= 1; lvl--) {                      /* the Lua asks IsActiveEnemy AND IsVulnerableEnemy; level 0 (any NPC) chased spikes and blocks */
         int c = 0;
         for (unsigned i = 0; i < n; i++) if (target_ok(snap[i], lvl)) c++;
         if (c) { if (count) *count = c; return lvl; }
@@ -223,7 +223,7 @@ static int hit_enemy(unsigned long e, float damage) {
 enum { S_DROP = 0, S_ACTIVE = 1, S_TRANSFORM = 2 };
 static struct {
     unsigned long e, owner, target;
-    int age, state, tick_off, head, tstart, moved_set, carried;
+    int age, state, tick_off, head, tstart, moved_set, carried, horiz;
     float lastx, lasty, lvx, lvy, tmp[2];
 } g_m[MAXM];
 
@@ -341,7 +341,7 @@ static void contact_tick(unsigned long e, unsigned long owner, int bonus) {
         int crit = rnd((unsigned) ffminion_crit_n(bonus, luck)) == 0;
         hit_enemy(c, ffminion_hit_damage(damage, bonus, crit));
         LOG_FEW(3, "ffminion: a minion hit an enemy (type %d) for %.2f%s", *(const int *) (c + E_TYPE), ffminion_hit_damage(damage, bonus, crit), crit ? " - CRITICAL" : "");
-        if (crit) show_crit(e);
+        if (crit) { static int cl; if (cl++ < 20) LOG("ffminion: CRITICAL hit (x5 = %.2f) on an enemy of type %d", ffminion_hit_damage(damage, bonus, 1), *(const int *) (c + E_TYPE)); show_crit(e); }
     }
 }
 
@@ -385,18 +385,32 @@ static void minion_ai(unsigned long e) {
     if (t) {
         float dx = fpos(t)[0] - fpos(e)[0], dy = fpos(t)[1] - fpos(e)[1];
         float len = __builtin_sqrtf(dx * dx + dy * dy);
-        if (len > 0.001f) { dx = dx / len * speed; dy = dy / len * speed; }
+        float sp = len < 24.0f ? speed * (len / 24.0f) : speed;   /* arrive softly: at full speed over the target's centre the direction flipped every frame (the blinking) */
+        if (len > 0.001f) { dx = dx / len * sp; dy = dy / len * sp; }
         if (t == owner && len < 40.0f) { dx = 0; dy = 0; }      /* nothing to fight: wait beside the owner */
         g_m[i].lvx += (dx - g_m[i].lvx) * 0.3f;
         g_m[i].lvy += (dy - g_m[i].lvy) * 0.3f;
     } else { g_m[i].lvx *= 0.8f; g_m[i].lvy *= 0.8f; }
     fpos(e)[0] += g_m[i].lvx; fpos(e)[1] += g_m[i].lvy; g_m[i].carried++;
+    {   /* minions do not stack on one pixel: each is pushed off any other minion closer than 14 units */
+        unsigned long sn[SNAP]; unsigned sc = snapshot(sn);
+        for (unsigned k = 0; k < sc; k++) {
+            unsigned long o = sn[k];
+            if (o == e || *(const int *) (o + E_TYPE) != T_PICKUP || *(const int *) (o + E_VARIANT) != V_MINION || !alive(o)) continue;
+            float ox = fpos(e)[0] - fpos(o)[0], oy = fpos(e)[1] - fpos(o)[1], od = __builtin_sqrtf(ox * ox + oy * oy);
+            if (od >= 14.0f) continue;
+            if (od < 0.01f) { float an = (float) rnd(628) / 100.0f; ox = __builtin_cosf(an); oy = __builtin_sinf(an); od = 1.0f; }
+            float push = (14.0f - od) * 0.25f;
+            fpos(e)[0] += ox / od * push; fpos(e)[1] += oy / od * push;
+        }
+    }
     v[0] = 0; v[1] = 0;
     v = g_m[i].tmp;                                           /* the animation choice below reads our velocity */
     v[0] = g_m[i].lvx; v[1] = g_m[i].lvy;
     {
         float ax = v[0] < 0 ? -v[0] : v[0], ay = v[1] < 0 ? -v[1] : v[1];
-        g_play(sprite, ax > ay ? "WalkHori" : "WalkVert", 0);
+        if (ax > ay * 1.3f) g_m[i].horiz = 1; else if (ay > ax * 1.3f) g_m[i].horiz = 0;     /* hysteresis: no flipping on the diagonal */
+        g_play(sprite, g_m[i].horiz ? "WalkHori" : "WalkVert", 0);
     }
     g_m[i].moved_set = 1;
     if (g_m[i].age == 90 || g_m[i].age == 240)
