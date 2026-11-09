@@ -53,3 +53,21 @@ if 'ffsound_on_open' not in s:
     if s.count(old) != 1: sys.exit('pack.c: ffsound anchor found %d times' % s.count(old))
     open(sys.argv[1], 'w', encoding='utf-8', newline='').write(s.replace(old, new, 1))
     print('ffsound hook added')
+
+# ffsound: a Fiend Folio path the game asks for and the pack does not hold is reported with its real spelling
+s = open(sys.argv[1], encoding='utf-8', newline='').read()
+if 'ffsound: miss' not in s:
+    old = "    if (inner_path(path, inside, sizeof(inside)) == (size_t) -1) return NULL;\n    return find(inside);\n}"
+    new = """    if (inner_path(path, inside, sizeof(inside)) == (size_t) -1) return NULL;
+    const entry_t *hit_ = find(inside);
+    if (!hit_ && strstr(path, "fiendfolio")) {            /* ffsound: miss */
+        int shim_report_active(void);
+        void report_line(const char *kind, const char *text);
+        static int told_;
+        if (shim_report_active() && told_ < 12) { told_++; char l_[400]; snprintf(l_, sizeof(l_), "the game asked for \\"%s\\" (inside the pack: \\"%s\\") and it is not there", path, inside); report_line("pack", l_); }
+    }
+    return hit_;
+}"""
+    if s.count(old) != 1: sys.exit('pack.c: ffsound miss anchor found %d times' % s.count(old))
+    open(sys.argv[1], 'w', encoding='utf-8', newline='').write(s.replace(old, new, 1))
+    print('ffsound miss log added')

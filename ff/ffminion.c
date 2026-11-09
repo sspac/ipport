@@ -34,6 +34,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include <math.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <android/log.h>
@@ -96,7 +97,11 @@
 
 #define DROP_FRAMES 22              /* "Drop" FrameNum */
 #define GRACE_FRAMES 15
-#define TRANSFORM_AT 21             /* Lua: Transform past frame 20 */
+/* The Lua morphs the same entity into the heart at frame 20 of "Transform", mid-air, and the heart's own "Appear" carries the fall on.
+ * Here the heart is a new entity, which cannot continue that fall, so the minion's own animation is played to where it lands: layer 3
+ * of Transform (morsel_minion_*.anm2) rises to y -26 and is back on the ground (y +6) from frame 35 of 43. The heart then appears on
+ * the floor at the same height, in its Idle. */
+#define TRANSFORM_AT 36
 #define CHASE_RANGE 900.0f
 #define CRIT_MS 1100                /* the "Crit" animation: 31 frames at 30 per second, and a little more */
 
@@ -519,10 +524,9 @@ static void to_heart(unsigned long e, int sub, float vx, float vy) {
     float zero[2] = { vx, vy };                              /* it carries on with the minion's slide (Lua morphs the same entity, which keeps its velocity) */
     unsigned long h = g_spawn(*(const unsigned long *) (g_base + GAME_PTR), T_PICKUP, v, fpos(e), zero, 0, st, 0, 0);
     if (!h) return;
-    /* Lua fiend.lua:1105-1107: sprite:Play("Appear", true) and at once sprite:Update() - the first frame of the heart's Appear is
-     * already past. A fresh pickup starts Appear from frame 0, whose first frames are empty: a few invisible frames between the
-     * minion and the heart. Start it one frame in, as the Lua does. */
-    { fn_setframe sf = (fn_setframe) (g_base + FN_SPRITE_SETFRAME); if (g_base) sf((void *) (h + E_SPRITE), "Appear", 1); }                                           /* could not be made: the minion stays as it was */
+    /* The minion's Transform animation ends on the ground, and a fresh heart pickup starts its "Appear" in the air (it jumps up and
+     * lands): that was the pop between the two. The minion has landed (TRANSFORM_AT); the heart takes over on the floor, in its Idle. */
+    if (g_play) g_play((void *) (h + E_SPRITE), "Idle", 1);                                           /* could not be made: the minion stays as it was */
     if (ffsound_heart_drop) ffsound_heart_drop();
     *(unsigned char *) (e + E_DEAD) = 1;
     *(unsigned char *) (e + E_EXISTS) = 0;
@@ -654,6 +658,29 @@ static void minion_ai(unsigned long e) {
 }
 
 void ffheart_poll(void) __attribute__((weak));       /* ffheart.c: sees a hit the game did not report */
+
+/*
+ * BONE ORBITALS (fiend.lua:262-275, 309-325): the Lua spawns familiar 3.128 (BONE_ORBITAL) and sets fam.Player = player. The
+ * owner pointer sits at familiar+0x3a8 (measured: variants 1, 31, 109, 112 and 239 all hold the player there; +0x400 holds it too,
+ * which is the spawner the engine records when the player is passed to Spawn).
+ */
+#define FAMILIAR_PLAYER 0x3a8
+#define T_FAMILIAR 3
+#define V_BONE_ORBITAL 128
+int ffminion_bone_orbitals(unsigned long player, int n) {
+    if (!g_spawn || !g_base || !player || n <= 0) return 0;
+    int made = 0;
+    for (int i = 0; i < n && i < 64; i++) {
+        float vel[2] = { 0, 0 };
+        float at[2] = { fpos(player)[0] + 20.0f * cosf(0.785398f * (float) i), fpos(player)[1] + 20.0f * sinf(0.785398f * (float) i) };   /* player.Position + RandomVector() * 20 */
+        unsigned long f = g_spawn(*(const unsigned long *) (g_base + GAME_PTR), T_FAMILIAR, V_BONE_ORBITAL, at, vel, player, 0, 0, 0);
+        if (!f) continue;
+        *(unsigned long *) (f + FAMILIAR_PLAYER) = player;
+        made++;
+    }
+    { static int logs; if (logs++ < 8) LOG("ffminion: %d of %d bone orbitals made for the player", made, n); }
+    return made;
+}
 
 /*
  * MEASUREMENT for the bone orbitals (Lua fiend.lua:262-275, 309-325 spawns familiar 3.128 and sets fam.Player = player): the

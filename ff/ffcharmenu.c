@@ -172,13 +172,16 @@ static int ff_locked(int slot) { (void) slot; return 0; }
 
 #define FN_SET_LAYER_FRAME 0x89ebf8   /* (sprite, layer, frame): what 0x5e6908 / 0x5e6810 call with layer 3 and 1 (locked) / 0 (unlocked) */
 #define L_NAME 3
-static void set_unlocked_by(unsigned long sprite, int shown) {
+static void set_unlocked_by(unsigned long sprite, int shown, int stats) {
     if (!sprite || *(const unsigned long *) (sprite + 0x10) != 0x8000000000000030ul || !*(const unsigned long *) sprite) return;
     unsigned long (*get_layer)(unsigned long, unsigned long) = (unsigned long (*)(unsigned long, unsigned long)) (g_base + FN_GET_LAYER);
     /* the engine's block for a vanilla slot (0x5e67e0 locked / 0x5e68dc unlocked): "Unlocked By" layer shown or hidden, the "Name"
      * layer visible and on its locked (1) or normal (0) frame. Past Jacob & Esau it is skipped, so the slot kept the neighbour's. */
     unsigned long l16 = get_layer(sprite, L_UNLOCKED_BY), l3 = get_layer(sprite, L_NAME);
     if (l16) *(unsigned char *) (l16 + 124) = (unsigned char) (shown != 0);
+    /* 0x5e6748-0x5e676c: when the byte at m+53 is set the engine turns layers 4..15 (the stats and the rest of the page) on for a
+     * slot below 18; past it that is skipped too, so a Fiend Folio slot stayed empty until Random (slot 17) turned them on. */
+    for (int l = 4; stats && l < 16; l++) { unsigned long ly = get_layer(sprite, (unsigned long) l); if (ly) *(unsigned char *) (ly + 124) = 1; }
     if (l3) *(unsigned char *) (l3 + 124) = 1;
     static const uint32_t want[2] = { 0xf9401c08u, 0xb4000068u };
     const uint32_t *fn = (const uint32_t *) (g_base + FN_SET_LAYER_FRAME);
@@ -193,8 +196,8 @@ static void w_update(unsigned long m) {
     int idx = *(const int *) (m + M_INDEX);
     if (idx >= 18) {          /* the engine's own block covers 0..17 (cmp w22,#18 at 0x5e6774); Fiend is slot 18 */
         int shown = ff_locked(idx);
-        set_unlocked_by(m + M_CENTRE, shown);
-        if (g_alt_centre) set_unlocked_by(g_alt_centre, shown);
+        set_unlocked_by(m + M_CENTRE, shown, *(const unsigned char *) (m + 53));
+        if (g_alt_centre) set_unlocked_by(g_alt_centre, shown, *(const unsigned char *) (m + 53));
         static int last = -1, n;
         if (idx != last && n++ < 12) LOG("ffcharmenu: slot %d is a Fiend Folio slot (engine block skipped): the Unlocked By layer is %s", idx, shown ? "shown" : "hidden");
         last = idx;

@@ -381,7 +381,12 @@ static void w_black(unsigned long p, int halves) {          /* calls AddSoulHear
     if (halves == 4 && before == 0 && is_fiend(p)) { g_immoral++; w_soul(p, 2); g_immoral--; }
 }
 
+int ffminion_bone_orbitals(unsigned long, int) __attribute__((weak));
 static void w_bone(unsigned long p, int wholes) {           /* calls AddSoulHearts inside */
+    /* fiend.lua:309-325: a Fiend gains no bone heart; each one that would be added gives 8 bone orbitals instead */
+    if (wholes > 0 && !g_conv && is_fiend(p) && ffminion_bone_orbitals) {
+        if (ffminion_bone_orbitals(p, wholes * 8) > 0) return;
+    }
     g_conv++;
     o_bone(p, wholes);
     g_conv--;

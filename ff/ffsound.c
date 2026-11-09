@@ -35,16 +35,21 @@ const void *shim_pack_peek(const char *inner, long *length);
 void shim_pack_add(const char *path, const void *data, long length);
 
 /* the new sound ids, appended after the game's 833 (sounds.xml gets them, in memory only, the table is made 833 + FF_NSOUNDS long) */
-#define FF_NSOUNDS 6
-enum { ID_HURT = 833, ID_DEATH, ID_DROP, ID_PICKUP, ID_PICKUP_RARE, ID_MINION };
-static const struct { int id; const char *files[8]; } FF_SND[FF_NSOUNDS] = {
-    { ID_HURT, { "fiiiiend/fiend_hurt01.wav", "fiiiiend/fiend_hurt02.wav", "fiiiiend/fiend_hurt03.wav", "fiiiiend/fiend_hurt04.wav", "fiiiiend/fiend_hurt05.wav", "fiiiiend/fiend_hurt06.wav", "fiiiiend/fiend_hurt07.wav", "fiiiiend/fiend_hurt08.wav" } },
+#define FF_NSOUNDS 7
+/* a sound record holds at most 7 samples (0x7f02bc: count at record+456, cmp #7 -> "exceeding max samples"), so the 8 hurt
+ * samples are two sounds of 4 and one of them is picked at random */
+enum { ID_HURT_A = 833, ID_HURT_B, ID_DEATH, ID_DROP, ID_PICKUP, ID_PICKUP_RARE, ID_MINION };
+static const struct { int id; const char *files[4]; } FF_SND[FF_NSOUNDS] = {
+    { ID_HURT_A, { "fiiiiend/fiend_hurt01.wav", "fiiiiend/fiend_hurt02.wav", "fiiiiend/fiend_hurt03.wav", "fiiiiend/fiend_hurt04.wav" } },
+    { ID_HURT_B, { "fiiiiend/fiend_hurt05.wav", "fiiiiend/fiend_hurt06.wav", "fiiiiend/fiend_hurt07.wav", "fiiiiend/fiend_hurt08.wav" } },
     { ID_DEATH, { "fiiiiend/fiend_death.wav" } },
     { ID_DROP, { "fiend_heart_drop.wav" } },
     { ID_PICKUP, { "fiend_heart_pickup.wav" } },
     { ID_PICKUP_RARE, { "fiend_heart_pickup2.wav" } },
     { ID_MINION, { "minion1.wav", "minion2.wav", "minion3.wav" } },
 };
+#define ID_HURT hurt_id()
+static int hurt_id(void);
 
 /* Called by pack.c the first time the game asks for sounds.xml: gives it the new <sound> records and lays the wavs where the
  * game will look for them (<dir of sounds.xml>sfx/fiendfolio/<path as in the mod>); the files themselves are the mod's sounds, kept under assets/fiendfolio/sounds. inner = sounds.xml's key in the pack. */
@@ -63,13 +68,18 @@ void ffsound_on_open(const char *inner) {
     char add[2048]; int al = 0;
     for (int i = 0; i < FF_NSOUNDS; i++) {
         al += snprintf(add + al, sizeof add - al, "\t<sound id=\"%d\">\n", FF_SND[i].id);
-        for (int k = 0; k < 8 && FF_SND[i].files[k]; k++) {
+        for (int k = 0; k < 4 && FF_SND[i].files[k]; k++) {
             al += snprintf(add + al, sizeof add - al, "\t\t<sample weight=\"1\" path=\"fiendfolio/%s\" />\n", FF_SND[i].files[k]);
             char from[96], to[400]; long wl = 0;
             snprintf(from, sizeof from, "fiendfolio/sounds/%s", FF_SND[i].files[k]);
             snprintf(to, sizeof to, "%ssfx/fiendfolio/%s", dir, FF_SND[i].files[k]);
             const void *w = shim_pack_peek(from, &wl);
-            if (w && wl > 0) shim_pack_add(to, w, wl); else LOG("ffsound: %s is missing from the assets", from);
+            if (w && wl > 0) {
+                shim_pack_add(to, w, wl);
+                /* the base game's sounds may be looked for under either resources folder of the pack */
+                static const char *const alt[] = { "rebirth-resources/data/", "repentance-resources/data/" };
+                for (int a = 0; a < 2; a++) { char t2[400]; snprintf(t2, sizeof t2, "%ssfx/fiendfolio/%s", alt[a], FF_SND[i].files[k]); if (strcmp(t2, to)) shim_pack_add(t2, w, wl); }
+            } else LOG("ffsound: %s is missing from the assets", from);
         }
         al += snprintf(add + al, sizeof add - al, "\t</sound>\n");
     }
@@ -80,7 +90,7 @@ void ffsound_on_open(const char *inner) {
     memcpy(out + (end - xml), add, (size_t) al);
     memcpy(out + (end - xml) + al, end, (size_t) (n - (end - xml)));
     shim_pack_add(inner, out, on);                      /* never freed: the pack keeps the pointer */
-    LOG("ffsound: %s now has %d more sounds (ids %d..%d); wavs under %ssfx/fiendfolio/", inner, FF_NSOUNDS, ID_HURT, ID_MINION, dir);
+    LOG("ffsound: %s now has %d more sounds (ids %d..%d); wavs under %ssfx/fiendfolio/ (and the other resources folder)", inner, FF_NSOUNDS, ID_HURT_A, ID_MINION, dir);
 }
 
 #ifndef FF_HOST_TEST
@@ -90,6 +100,7 @@ static unsigned char *g_base;
 typedef void (*sfx_fn)(unsigned long, int, int, int, float, float, float);
 static sfx_fn o_sfx;
 static unsigned long g_mgr;
+static int g_swallow;                    /* > 0: an immoral heart is being collected: its own sound replaces the soul heart's (customhealth.lua CollectSound) */
 static int g_own;                        /* > 0: our own call into the engine, not to be replaced */
 
 static unsigned g_rng = 2463534242u;
@@ -116,9 +127,12 @@ static int ff_char(void) {                       /* the first player's character
 
 enum { C_FIEND = 41, C_CHINA = 50, C_CLASSIC = 52, C_SKELETAL = 54, C_FEND = 55 };
 
+static int hurt_id(void) { return ID_HURT_A + (int) rnd(2); }
+
 static void w_sfx(unsigned long mgr, int id, int delay, int loop, float vol, float pitch, float pan) {
     if (!g_mgr) g_mgr = mgr;
     if (g_own) { o_sfx(mgr, id, delay, loop, vol, pitch, pan); return; }
+    if (g_swallow > 0) return;
     /* Lua main.lua:4806-4825 (PRE_SFX_PLAY on ISAACDIES) and 21150+ (sfx:Stop(HURT_GRUNT)): only for a Fiend Folio character,
      * the vanilla grunt/death is cut and the character's own sound plays instead. Everyone else keeps the game's. */
     if (id == SND_HURT || id == SND_DEATH) {
@@ -140,8 +154,8 @@ static void w_sfx(unsigned long mgr, int id, int delay, int loop, float vol, flo
     o_sfx(mgr, id, delay, loop, vol, pitch, pan);
 }
 
-void ffsound_pickup_begin(void) { }
-void ffsound_pickup_end(int collected) { if (collected) engine_sound(rnd(1000) == 0 ? ID_PICKUP_RARE : ID_PICKUP, 1.0f, 1.0f); }
+void ffsound_pickup_begin(void) { g_swallow++; }
+void ffsound_pickup_end(int collected) { if (g_swallow > 0) g_swallow--; if (collected) engine_sound(rnd(1000) == 0 ? ID_PICKUP_RARE : ID_PICKUP, 1.0f, 1.0f); }
 void ffsound_heart_drop(void) { engine_sound(ID_DROP, 0.8f, 1.0f); }
 void ffsound_minion_hit(void) { engine_sound(SND_MEATY, 0.2f, frnd(1.5f, 2.0f)); }
 void ffsound_minion_crit(void) { engine_sound(ID_MINION, 0.6f, frnd(0.8f, 1.2f)); }
