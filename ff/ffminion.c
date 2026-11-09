@@ -97,11 +97,14 @@
 
 #define DROP_FRAMES 22              /* "Drop" FrameNum */
 #define GRACE_FRAMES 15
-/* The Lua morphs the same entity into the heart at frame 20 of "Transform", mid-air, and the heart's own "Appear" carries the fall on.
- * Here the heart is a new entity, which cannot continue that fall, so the minion's own animation is played to where it lands: layer 3
- * of Transform (morsel_minion_*.anm2) rises to y -26 and is back on the ground (y +6) from frame 35 of 43. The heart then appears on
- * the floor at the same height, in its Idle. */
-#define TRANSFORM_AT 36
+/* fiend.lua:1086-1106: "Transform" plays; past frame 20 the Lua morphs the entity into the heart (Morph), RELOADS the minion's own anm2
+ * (entry.PickupAnim = morsel_minion_*.anm2) and plays ITS "Appear" (22 frames, with "Idle" and "Collect" after it). So the fall the PC
+ * shows is the minion anm2's Appear, not the vanilla heart's: the vanilla heart's Appear is a different hop, and that was the second
+ * jump in the port's video. Here the minion entity keeps its own sprite (the same anm2): at frame 20 it plays "Appear" itself, and
+ * only when that is over, on the ground and still, is the real heart entity made, in its Idle and already collectable. */
+#define MORPH_AT 20
+#define APPEAR_FRAMES 22
+#define TRANSFORM_AT (MORPH_AT + 1 + APPEAR_FRAMES)
 #define CHASE_RANGE 900.0f
 #define CRIT_MS 1100                /* the "Crit" animation: 31 frames at 30 per second, and a little more */
 
@@ -525,7 +528,7 @@ static void to_heart(unsigned long e, int sub, float vx, float vy) {
     unsigned long h = g_spawn(*(const unsigned long *) (g_base + GAME_PTR), T_PICKUP, v, fpos(e), zero, 0, st, 0, 0);
     if (!h) return;
     /* The minion's Transform animation ends on the ground, and a fresh heart pickup starts its "Appear" in the air (it jumps up and
-     * lands): that was the pop between the two. The minion has landed (TRANSFORM_AT); the heart takes over on the floor, in its Idle. */
+     * lands): that was the pop between the two. The minion's own Appear has finished (TRANSFORM_AT); the heart takes over on the floor, in its Idle. */
     if (g_play) g_play((void *) (h + E_SPRITE), "Idle", 1);
     /* Playing "Idle" alone left the heart un-collectable until the room was reloaded (user's video). Pickup::Update (0x7193a4) keeps a
      * state at +0x1e4: 0 while it appears; when "Appear" is seen finishing it plays "Idle" and stores 4 (0x71a908-0x71a920), and only
@@ -590,6 +593,7 @@ static void minion_ai(unsigned long e) {
         g_m[i].lvx *= 0.9f; g_m[i].lvy *= 0.9f;
         move_on_grid(fpos(e), g_m[i].lvx, g_m[i].lvy, g_m[i].fly, &g_m[i].lvx, &g_m[i].lvy);
         v[0] = g_m[i].lvx; v[1] = g_m[i].lvy;
+        if (g_m[i].tstart == MORPH_AT + 1) g_play(sprite, "Appear", 1);              /* Lua: sprite:Play("Appear", true) after the Morph */
         if (++g_m[i].tstart > TRANSFORM_AT) { to_heart(e, sub, g_m[i].lvx, g_m[i].lvy); g_m[i].e = 0; }
         return;
     }
