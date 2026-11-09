@@ -81,3 +81,18 @@ patch	repentance-resources/dlc3.zh/gfx/ui/main menu/saveselectmenu.anm2	port_pat
 patch	repentance-resources/dlc3.zh/gfx/ui/pausescreen.anm2	port_patch/repentance-resources/dlc3.zh/gfx/ui/pausescreen.anm2.patch
 variants	rebirth-resources/data/gfx/ui/touch/ios_buttons.anm2	100,105,110,115,120,125,130,135,140,150,170,175
 inpak	rebirth-resources/data/stringtable.sta
+file	fiendfolio/sounds/fiend_heart_drop.wav	fiendfolio/sounds/fiend_heart_drop.wav
+file	fiendfolio/sounds/fiend_heart_pickup.wav	fiendfolio/sounds/fiend_heart_pickup.wav
+file	fiendfolio/sounds/fiend_heart_pickup2.wav	fiendfolio/sounds/fiend_heart_pickup2.wav
+file	fiendfolio/sounds/fiiiiend/fiend_death.wav	fiendfolio/sounds/fiiiiend/fiend_death.wav
+file	fiendfolio/sounds/fiiiiend/fiend_hurt01.wav	fiendfolio/sounds/fiiiiend/fiend_hurt01.wav
+file	fiendfolio/sounds/fiiiiend/fiend_hurt02.wav	fiendfolio/sounds/fiiiiend/fiend_hurt02.wav
+file	fiendfolio/sounds/fiiiiend/fiend_hurt03.wav	fiendfolio/sounds/fiiiiend/fiend_hurt03.wav
+file	fiendfolio/sounds/fiiiiend/fiend_hurt04.wav	fiendfolio/sounds/fiiiiend/fiend_hurt04.wav
+file	fiendfolio/sounds/fiiiiend/fiend_hurt05.wav	fiendfolio/sounds/fiiiiend/fiend_hurt05.wav
+file	fiendfolio/sounds/fiiiiend/fiend_hurt06.wav	fiendfolio/sounds/fiiiiend/fiend_hurt06.wav
+file	fiendfolio/sounds/fiiiiend/fiend_hurt07.wav	fiendfolio/sounds/fiiiiend/fiend_hurt07.wav
+file	fiendfolio/sounds/fiiiiend/fiend_hurt08.wav	fiendfolio/sounds/fiiiiend/fiend_hurt08.wav
+file	fiendfolio/sounds/minion1.wav	fiendfolio/sounds/minion1.wav
+file	fiendfolio/sounds/minion2.wav	fiendfolio/sounds/minion2.wav
+file	fiendfolio/sounds/minion3.wav	fiendfolio/sounds/minion3.wav
