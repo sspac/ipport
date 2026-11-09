@@ -137,8 +137,10 @@ static void watch_name(const char *name) {
     g_play_logs++;
     LOG("ffmenu: the game plays the animation \"%s\"", name);
 }
+void ffcharmenu_tick(void) __attribute__((weak));
 static void w_play(void *sprite, const char *name, int flag) {
     watch_name(name);
+    if (ffcharmenu_tick) ffcharmenu_tick();
     o_play(sprite, name, flag);
 }
 

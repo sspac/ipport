@@ -470,6 +470,8 @@ static int soul_form(int variant) {
     }
 }
 
+void ffsound_pickup_begin(void) __attribute__((weak));
+void ffsound_pickup_end(int) __attribute__((weak));
 static int w_collide(unsigned long pk, unsigned long other, int low) {
     int variant = *(const int *) (pk + E_VARIANT);
     if (variant == V_MINION && *(const int *) (pk + E_TYPE) == PICKUP) return 0;   /* a minion is not picked up */
@@ -480,9 +482,10 @@ static int w_collide(unsigned long pk, unsigned long other, int low) {
     *(int *) (pk + E_VARIANT) = V_HEART;
     *(int *) (pk + E_SUBTYPE) = sub;
     int soul_before = soul_halves(other);
-    if (immoral) g_immoral++;
+    if (immoral) { g_immoral++; if (ffsound_pickup_begin) ffsound_pickup_begin(); }
     int r = o_collide(pk, other, low);
     if (immoral) g_immoral--;
+    if (immoral && ffsound_pickup_end) ffsound_pickup_end(soul_halves(other) > soul_before);
     if (immoral && soul_halves(other) > soul_before) {      /* whatever path the game took to add it, the new hearts are immoral */
         imm_after(other, soul_before, soul_halves(other), 1);
         poll_note(other);

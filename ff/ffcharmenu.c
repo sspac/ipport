@@ -25,6 +25,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include <string.h>
 #include <sys/mman.h>
 #include <android/log.h>
@@ -78,6 +79,7 @@ static void fill(unsigned long m) {
     if (!mgr || !m) return;
     unsigned long centre_sprite = m + M_CENTRE, ring_sprite = m + M_RING;
     if (!*(const unsigned long *) centre_sprite || !*(const unsigned long *) ring_sprite) return;     /* not loaded (yet): do nothing */
+    if (*(const unsigned long *) (centre_sprite + 0x10) != 0x8000000000000030ul || *(const unsigned long *) (ring_sprite + 0x10) != 0x8000000000000030ul) return;   /* not Sprites (a stale menu) */
     unsigned long table = mgr + TABLE_OFF;
     int made = 0, seen = 0;
     for (unsigned id = FF_FIRST; id < FF_FIRST + FF_COUNT; id++) {
@@ -110,7 +112,7 @@ static int g_alt_tried, g_alt_logs;
 
 static unsigned find_sprites(unsigned long m, unsigned *out, unsigned max) {
     unsigned n = 0;
-    for (unsigned off = 0x40; off + 0x20 < 0x1700 && n < max; off += 8) {
+    for (unsigned off = 0x40; off + 0x20 < 0x1900 && n < max; off += 8) {
         if (*(const unsigned long *) (m + off + 0x10) == SPRITE_SHAPE && *(const unsigned long *) (m + off)) out[n++] = off;
     }
     return n;
@@ -138,10 +140,56 @@ static void watch_alt(unsigned long m) {
     }
 }
 
+/*
+ * THE "CONTINUE" NOTE. Coming back to the title screen after a run the records come back without their sprites (the player table
+ * is rebuilt) and nothing runs the select screen's update until it is opened, so the note on "Continue" had no portrait until
+ * the player visited New Run. So the same fill also runs, at most every 100 ms, from the game's animation calls (ffmenu.c
+ * calls ffcharmenu_tick) with the last select-screen object seen.
+ */
+static unsigned long g_menu;
+static long long g_tick_at;
+void ffcharmenu_tick(void) {
+    if (!g_menu || !g_base) return;
+    struct timespec ts; clock_gettime(CLOCK_MONOTONIC, &ts);
+    long long t = (long long) ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    if (t - g_tick_at < 100) return;
+    g_tick_at = t;
+    fill(g_menu);
+}
+
+/*
+ * THE "UNLOCKED BY" LAYER. The engine shows layer 16 of the centre picture ("Unlocked By", the text of how to unlock a character)
+ * by writing the layer's visible byte (GetLayer(sprite, id) at 0x89e710, byte +124): 0x5e67e0 turns it ON for a locked vanilla
+ * character (index m+0x40 < 18) and 0x5e68dc turns it OFF for the others - but the branch for index >= 18 skips both, so the
+ * Fiend Folio slots show whatever the neighbour left (Bethany's or Jacob & Esau's "locked" text). Here, after the engine's own
+ * update, a slot past Jacob & Esau (index 18) gets the layer set from ff_locked(): shown for a locked character, hidden for an
+ * unlocked one. Every Fiend Folio character is unlocked for now: when they get unlock methods, ff_locked() is the one place.
+ */
+#define FN_GET_LAYER 0x89e710
+#define M_INDEX      0x40
+#define L_UNLOCKED_BY 16
+static int ff_locked(int slot) { (void) slot; return 0; }
+
+static void set_unlocked_by(unsigned long sprite, int shown) {
+    if (!sprite || *(const unsigned long *) (sprite + 0x10) != 0x8000000000000030ul || !*(const unsigned long *) sprite) return;
+    unsigned long layer = ((unsigned long (*)(unsigned long, unsigned long)) (g_base + FN_GET_LAYER))(sprite, L_UNLOCKED_BY);
+    if (layer) *(unsigned char *) (layer + 124) = (unsigned char) (shown != 0);
+}
+
 static void w_update(unsigned long m) {
+    g_menu = m;
     watch_alt(m);
     if (!g_done) fill(m);
     o_update(m);
+    int idx = *(const int *) (m + M_INDEX);
+    if (idx > 18) {
+        int shown = ff_locked(idx);
+        set_unlocked_by(m + M_CENTRE, shown);
+        if (g_alt_centre) set_unlocked_by(g_alt_centre, shown);
+        static int last = -1, n;
+        if (idx != last && n++ < 12) LOG("ffcharmenu: slot %d is past Jacob & Esau: the Unlocked By layer is %s", idx, shown ? "shown" : "hidden");
+        last = idx;
+    }
 }
 
 void shim_ffcharmenu_install(unsigned char *base) {

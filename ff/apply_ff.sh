@@ -14,6 +14,7 @@ cp "$HERE/ffsay.h" "$CPP/ffsay.h"
 cp "$HERE/ffminion.c" "$CPP/ffminion.c"
 cp "$HERE/ffmenu.c" "$CPP/ffmenu.c"
 cp "$HERE/ffcharmenu.c" "$CPP/ffcharmenu.c"
+cp "$HERE/ffsound.c" "$CPP/ffsound.c"
 python3 - <<'PY'
 def edit(path, old, new):
     s = open(path, encoding='utf-8', newline='').read()
@@ -23,7 +24,7 @@ def edit(path, old, new):
         raise SystemExit("expected text found %d times in %s: %r" % (s.count(old), path, old[:70]))
     open(path, 'w', encoding='utf-8', newline='').write(s.replace(old, new))
 C = 'port/app/src/main/cpp/'
-edit(C + 'CMakeLists.txt', ' rangefix.c ', ' rangefix.c ffchars.c ffheart.c ffminion.c ffmenu.c ffcharmenu.c ')
+edit(C + 'CMakeLists.txt', ' rangefix.c ', ' rangefix.c ffchars.c ffheart.c ffminion.c ffmenu.c ffcharmenu.c ffsound.c ')
 edit(C + 'loader.c',
      '        { void shim_rangefix_install(unsigned char *); shim_rangefix_install(im.base); }\n',
      '        { void shim_rangefix_install(unsigned char *); shim_rangefix_install(im.base); }\n'
@@ -36,7 +37,22 @@ edit(C + 'loader.c',
      '        /* Fiend Folio: character select and death screen art (ffmenu.c) */\n'
      '        { void shim_ffmenu_install(unsigned char *); shim_ffmenu_install(im.base); }\n'
      '        /* Fiend Folio: the character select screen drawn by the port (ffcharmenu.c) */\n'
-     '        { void shim_ffcharmenu_install(unsigned char *); shim_ffcharmenu_install(im.base); }\n')
+     '        { void shim_ffcharmenu_install(unsigned char *); shim_ffcharmenu_install(im.base); }\n'
+     '        /* Fiend Folio: sounds (ffsound.c) */\n'
+     '        { void shim_ffsound_install(unsigned char *); shim_ffsound_install(im.base); }\n')
 print("fiend folio modules applied")
 PY
 python3 "$HERE/ffwatch_patch.py" "$CPP/pack.c"
+# Mali crash (libGLES_mali.so, from libisaacport.so shim_gpu_passes_open+0x468): the per-pass timestamp queries of the report build
+# (gpu.c ts_harvest -> glGetQueryObjectivEXT on a glQueryCounterEXT query) fault inside the driver. Measured from the crash address
+# in the user's libisaacport.so. The timestamps are diagnostics only; the passes are still counted.
+python3 - <<'PY'
+p = 'port/app/src/main/cpp/gpu.c'
+s = open(p, encoding='utf-8', newline='').read()
+old = '        if (ts_counter && bits > 0) {\n            g_ts_on = bits;'
+new = '        if (0 && ts_counter && bits > 0) {   /* off: the Mali driver faults reading these queries */\n            g_ts_on = bits;'
+if 'the Mali driver faults' in s: print('gpu timestamps already off')
+elif s.count(old) != 1: raise SystemExit('gpu.c: expected text found %d times' % s.count(old))
+else:
+    open(p, 'w', encoding='utf-8', newline='').write(s.replace(old, new)); print('gpu timestamp queries off')
+PY

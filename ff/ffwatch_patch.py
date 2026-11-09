@@ -4,8 +4,6 @@ Idempotent. Usage: python3 ffwatch_patch.py port/app/src/main/cpp/pack.c"""
 import sys
 p = sys.argv[1]
 s = open(p, encoding='utf-8', newline='').read()
-if 'ffwatch' in s:
-    print('ffwatch already there'); sys.exit(0)
 old = '''    g_pack_data++;
     const entry_t *e = by_path(path);
     if (!e) return NULL;
@@ -32,6 +30,26 @@ new = '''    g_pack_data++;
 #endif
     if (!e) return NULL;
 '''
-if s.count(old) != 1: sys.exit('pack.c: expected text found %d times' % s.count(old))
-open(p, 'w', encoding='utf-8', newline='').write(s.replace(old, new))
-print('ffwatch added')
+if 'ffwatch' in s: print('ffwatch already there')
+elif s.count(old) != 1: sys.exit('pack.c: expected text found %d times' % s.count(old))
+else:
+    open(p, 'w', encoding='utf-8', newline='').write(s.replace(old, new))
+    print('ffwatch added')
+
+# ffsound: the first time the game asks for sounds.xml the FF sounds are added to it (ffsound.c)
+s = open(sys.argv[1], encoding='utf-8', newline='').read()
+if 'ffsound_on_open' not in s:
+    old = "    g_pack_data++;\n    const entry_t *e = by_path(path);\n"
+    new = """    g_pack_data++;
+    { /* ffsound: sounds.xml gets the Fiend Folio sounds the first time it is asked for */
+        void ffsound_on_open(const char *inner) __attribute__((weak));
+        size_t pl = strlen(path);
+        char fin[1024];
+        if (ffsound_on_open && pl > 10 && same_path(path + pl - 10, "sounds.xml") && inner_path(path, fin, sizeof(fin)) != (size_t) -1)
+            ffsound_on_open(fin);
+    }
+    const entry_t *e = by_path(path);
+"""
+    if s.count(old) != 1: sys.exit('pack.c: ffsound anchor found %d times' % s.count(old))
+    open(sys.argv[1], 'w', encoding='utf-8', newline='').write(s.replace(old, new, 1))
+    print('ffsound hook added')

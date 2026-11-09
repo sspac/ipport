@@ -27,14 +27,15 @@
  *   and +0x1a5c, clear delay +0x1918 (spawner.c). Room entity list: array +0x78, count +0x84 (eid_craft.c).
  *
  * WHAT IS NOT MEASURED AND SO IS NOT DONE (each is a line in the report): the EntityRef the game wants with a damage
- * is a zeroed block (type 0, no source entity: the hit is credited to nobody); there is no pathfinding (a minion goes
- * straight at its target and can stop behind a rock); no sound; no blood splat; the sprite is not flipped; War Horn,
+ * is a zeroed block (type 0, no source entity: the hit is credited to nobody); the walls and rocks are read from the room's tile table when the table can be found (see "the room's grid" below); no sound; no blood splat; the sprite is not flipped; War Horn,
  * Imp Soda, flying players, Birthcake and persistent minions of other mods are not here. The "active room" is the
  * game's own enemy count (+0x1a58/+0x1a5c) or its clear delay: an ambush wave pause counts as clear.
  */
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <android/log.h>
 #include "diag.h"
 
@@ -50,6 +51,7 @@
 #define FN_SPAWN           0x88fcbc
 #define FN_SPRITE_PLAY     0x89e82c
 #define FN_SPRITE_OVERLAY  0x89ee7c
+#define FN_SPRITE_REMOVE_OVERLAY 0x89eef8   /* (sprite): add x0,x0,#0x60; mov x1,#0; b the overlay's own set-animation */
 
 #define GAME_PTR           0xac3b90
 #define GAME_ROOM          0x21550
@@ -110,6 +112,8 @@ static fn_update o_update;
 static fn_spawn g_spawn;                    /* the host test puts its own here */
 static fn_play g_play;
 static fn_overlay g_overlay;
+static void no_overlay(void *s) { (void) s; }
+static void (*g_remove_overlay)(void *) = no_overlay;
 static unsigned long (*g_list_now)(void);   /* the room's entity list object (port: shim_eid_list_now) */
 
 unsigned long shim_eid_list_now(void);
@@ -223,7 +227,8 @@ static int hit_enemy(unsigned long e, float damage) {
 enum { S_DROP = 0, S_ACTIVE = 1, S_TRANSFORM = 2 };
 static struct {
     unsigned long e, owner, target;
-    int age, state, tick_off, head, tstart, moved_set, carried, horiz;
+    int age, state, tick_off, head, tstart, moved_set, carried, horiz, wvalid, fly;
+    float wx, wy;
     float lastx, lasty, lvx, lvy, tmp[2];
 } g_m[MAXM];
 
@@ -300,13 +305,190 @@ void ffminion_heart_for(int sub, int *variant, int *subtype) {
     else { *variant = V_HEART; *subtype = ST_BLACK; }
 }
 
+
+/* ---------------------------------------------------------------------------------------------- the room's grid
+ * The Lua leaves the walking to the engine: it sets pickup.GridCollisionClass to GRIDCOLL_GROUND (rocks, pits, walls stop a
+ * minion) or GRIDCOLL_WALLS when the player CanFly (only walls), and a minion that cannot see its target takes
+ * CatheryPathFinding (fiend.lua:1019, 1131-1145). Here the minion moves itself, so it reads the room's tile classes itself.
+ * NOT MEASURED: where the engine keeps them. The room is searched, once per room, for a W x H table of small numbers that looks like
+ * a room (a wall class all round the border, mostly 0 inside; 15x9, 28x9, 15x16 or 28x16 tiles, either as bytes or ints), either
+ * inside the Room object or behind a pointer in it. Tile (c, r) has its centre at (20 + 40c, 100 + 40r). If nothing is found
+ * the log says so and the minions walk without the grid, as before. Memory is copied through a pipe so a bad pointer is an
+ * error, not a crash.
+ */
+static int g_pipe[2] = { -1, -1 };
+static int safe_copy(void *dst, const void *src, unsigned long n) {
+    if ((unsigned long) src < 0x10000ul || n > 60000) return 0;
+    if (g_pipe[0] < 0) {
+        if (pipe(g_pipe) != 0) { g_pipe[0] = g_pipe[1] = -1; return 0; }
+        fcntl(g_pipe[0], F_SETFL, O_NONBLOCK); fcntl(g_pipe[1], F_SETFL, O_NONBLOCK);
+    }
+    long w = write(g_pipe[1], src, n);
+    if (w <= 0) return 0;
+    unsigned long got = 0; char tmp[256];
+    while (got < (unsigned long) w) {
+        unsigned long want = (unsigned long) w - got;
+        long r = read(g_pipe[0], w == (long) n ? (char *) dst + got : tmp, w == (long) n ? want : (want > sizeof tmp ? sizeof tmp : want));
+        if (r <= 0) break;
+        got += (unsigned long) r;
+    }
+    return w == (long) n && got == n;
+}
+
+static unsigned char g_cells[448];
+static int g_gw, g_gh, g_wallv;
+static unsigned long g_grid_at; static int g_grid_stride, g_grid_logs;
+static long long g_grid_checked, g_grid_searched;
+static const int g_dims[4][2] = { { 15, 9 }, { 28, 9 }, { 15, 16 }, { 28, 16 } };
+
+/* is cells[0 .. W*H) a room? returns the wall value or 0 */
+static int looks_like_room(const unsigned char *c, int W, int H) {
+    int wall = 0, walls = 0, border = 0, zeros = 0, inner = 0;
+    for (int x = 0; x < W; x++) for (int y = 0; y < H; y++) {
+        int v = c[x + y * W];
+        if (v > 6) return 0;
+        if (x == 0 || y == 0 || x == W - 1 || y == H - 1) {
+            border++;
+            if (v) { if (!wall) wall = v; if (v == wall) walls++; }
+        } else { inner++; if (!v) zeros++; }
+    }
+    if (!wall || walls * 100 < border * 80 || zeros * 100 < inner * 40) return 0;
+    return wall;
+}
+static int try_block(const void *mem, unsigned long avail, int stride, unsigned long at) {
+    unsigned char cells[448];
+    for (int d = 3; d >= 0; d--) {                               /* the biggest first */
+        int W = g_dims[d][0], H = g_dims[d][1], n = W * H;
+        if ((unsigned long) n * stride > avail) continue;
+        for (int i = 0; i < n; i++) { unsigned v = stride == 4 ? ((const unsigned *) mem)[i] : ((const unsigned char *) mem)[i]; cells[i] = v > 250 ? 250 : (unsigned char) v; }
+        int w = looks_like_room(cells, W, H);
+        if (!w) continue;
+        memcpy(g_cells, cells, (size_t) n); g_gw = W; g_gh = H; g_wallv = w; g_grid_at = at; g_grid_stride = stride;
+        return 1;
+    }
+    return 0;
+}
+/* re-read the table where it was found; 1 if it still looks like a room */
+static int grid_reread(void) {
+    if (!g_grid_at) return 0;
+    unsigned char raw[448 * 4];
+    unsigned long n = (unsigned long) 448 * g_grid_stride;
+    if (!safe_copy(raw, (const void *) g_grid_at, n)) return 0;
+    return try_block(raw, n, g_grid_stride, g_grid_at);
+}
+static void grid_search(unsigned long room) {
+    static unsigned char buf[0x30000];
+    unsigned long have = 0;
+    for (unsigned long off = 0; off < sizeof buf; off += 0x1000) {
+        if (!safe_copy(buf + off, (const void *) (room + off), 0x1000)) break;
+        have = off + 0x1000;
+    }
+    for (unsigned long o = 0; o + 64 < have; o += 4)               /* ints, inside the object */
+        if (((const unsigned *) (buf + o))[0] != 0 && try_block(buf + o, have - o, 4, room + o)) return;
+    for (unsigned long o = 0; o + 64 < have; o++)                  /* bytes, inside the object */
+        if (buf[o] && buf[o] == buf[o + 1] && try_block(buf + o, have - o, 1, room + o)) return;
+    for (unsigned long o = 0; o + 8 <= have; o += 8) {             /* behind a pointer in the object */
+        unsigned long p = *(const unsigned long *) (buf + o);
+        if (p < 0x100000ul || (p & 3)) continue;
+        unsigned char raw[448 * 4];
+        if (!safe_copy(raw, (const void *) p, sizeof raw)) continue;
+        if (try_block(raw, sizeof raw, 4, p)) return;
+        if (try_block(raw, sizeof raw, 1, p)) return;
+    }
+    g_gw = g_gh = 0; g_grid_at = 0;
+}
+static void grid_update(void) {
+    long long t = now_ms();
+    if (t - g_grid_checked < 100) return;
+    g_grid_checked = t;
+    unsigned long room = g_room ? g_room() : 0;
+    if (!room) return;
+    if (g_gw && grid_reread()) return;
+    if (t - g_grid_searched < 700) return;                         /* not more than a search every 0.7 s */
+    g_grid_searched = t;
+    int had = g_gw;
+    grid_search(room);
+    if (g_gw && g_grid_logs++ < 12) LOG("ffminion: the room grid is at room%+ld (%s), %d x %d tiles, wall value %d, %d tiles not free", (long) (g_grid_at - room), g_grid_stride == 4 ? "ints" : "bytes", g_gw, g_gh, g_wallv, ({ int k = 0; for (int i = 0; i < g_gw * g_gh; i++) k += g_cells[i] != 0; k; }));
+    else if (!g_gw && !had && g_grid_logs++ < 12) LOG("ffminion: no room grid found in the room object - minions walk without it");
+}
+static int tile_at(int c, int r) { if (c < 0 || r < 0 || c >= g_gw || r >= g_gh) return 255; return g_cells[c + r * g_gw]; }
+static int tile_blocked(int c, int r, int fly) { int v = tile_at(c, r); return v == 255 || (fly ? v == g_wallv : v != 0); }
+static int xy_blocked(float x, float y, int fly) { return tile_blocked((int) __builtin_floorf(x / 40.0f), (int) __builtin_floorf((y - 80.0f) / 40.0f), fly); }
+static int box_blocked(float x, float y, int fly) {
+    const float r = 6.0f;
+    return xy_blocked(x - r, y - r, fly) || xy_blocked(x + r, y - r, fly) || xy_blocked(x - r, y + r, fly) || xy_blocked(x + r, y + r, fly);
+}
+static int line_clear(float x0, float y0, float x1, float y1, int fly) {
+    float dx = x1 - x0, dy = y1 - y0, d = __builtin_sqrtf(dx * dx + dy * dy);
+    int steps = (int) (d / 10.0f) + 1;
+    for (int k = 1; k < steps; k++) if (box_blocked(x0 + dx * k / steps, y0 + dy * k / steps, fly)) return 0;
+    return 1;
+}
+/* the centre of the next tile on the way to (tx, ty) around what blocks: breadth-first from the target; 0 if there is no way */
+static int path_step(float fx, float fy, float tx, float ty, int fly, float *wx, float *wy) {
+    if (!g_gw) return 0;
+    int W = g_gw, H = g_gh, n = W * H;
+    int sc = (int) __builtin_floorf(fx / 40.0f), sr = (int) __builtin_floorf((fy - 80.0f) / 40.0f);
+    int tc = (int) __builtin_floorf(tx / 40.0f), tr = (int) __builtin_floorf((ty - 80.0f) / 40.0f);
+    if (sc < 0 || sr < 0 || sc >= W || sr >= H || tc < 0 || tr < 0 || tc >= W || tr >= H) return 0;
+    short dist[448], q[448]; int qh = 0, qt = 0;
+    for (int i = 0; i < n; i++) dist[i] = -1;
+    dist[tc + tr * W] = 0; q[qt++] = (short) (tc + tr * W);
+    static const int dc[8] = { 1, -1, 0, 0, 1, 1, -1, -1 }, dr[8] = { 0, 0, 1, -1, 1, -1, 1, -1 };
+    while (qh < qt) {
+        int cur = q[qh++], c = cur % W, r = cur / W;
+        for (int k = 0; k < 8; k++) {
+            int nc = c + dc[k], nr = r + dr[k];
+            if (nc < 0 || nr < 0 || nc >= W || nr >= H || dist[nc + nr * W] >= 0 || tile_blocked(nc, nr, fly)) continue;
+            if (k >= 4 && (tile_blocked(c + dc[k], r, fly) || tile_blocked(c, r + dr[k], fly))) continue;        /* no cutting a corner */
+            dist[nc + nr * W] = (short) (dist[cur] + 1); q[qt++] = (short) (nc + nr * W);
+        }
+    }
+    int here = dist[sc + sr * W];
+    int best = -1, bd = 32000;
+    for (int k = 0; k < 8; k++) {
+        int nc = sc + dc[k], nr = sr + dr[k];
+        if (nc < 0 || nr < 0 || nc >= W || nr >= H) continue;
+        int d = dist[nc + nr * W];
+        if (d < 0 || (here >= 0 && d >= here) || d >= bd) continue;
+        if (k >= 4 && (tile_blocked(sc + dc[k], sr, fly) || tile_blocked(sc, sr + dr[k], fly))) continue;
+        bd = d; best = k;
+    }
+    if (best < 0) return 0;
+    *wx = 20.0f + 40.0f * (sc + dc[best]); *wy = 100.0f + 40.0f * (sr + dr[best]);
+    return 1;
+}
+static void move_on_grid(float *p, float vx, float vy, int fly, float *lvx, float *lvy) {
+    if (!g_gw) { p[0] += vx; p[1] += vy; return; }
+    int inside = box_blocked(p[0], p[1], fly);                      /* already in something: let it walk out */
+    if (inside || !box_blocked(p[0] + vx, p[1], fly)) p[0] += vx; else *lvx = 0;
+    if (inside || !box_blocked(p[0], p[1] + vy, fly)) p[1] += vy; else *lvy = 0;
+}
+
+/* Lua CanFly, for the items that give it for as long as they are held (the wiki's flight page): Transcendence 20, Lord of the
+ * Pit 82, Spirit of the Night 159, Fate 179, Holy Grail 184, Dead Dove 185, Revelation 643, Spirit Shackles 674, Dogma 633.
+ * The player keeps a count per collectible id at *(player+0x1ab8). Temporary and conditional flight is not seen. */
+static int owner_flies(unsigned long owner) {
+    static const int ids[] = { 20, 82, 159, 179, 184, 185, 633, 643, 674 };
+    const int *counts = (const int *) *(const unsigned long *) (owner + 0x1ab8);
+    if (!counts) return 0;
+    int tmp[700];
+    if (!safe_copy(tmp, counts, sizeof tmp)) return 0;
+    for (unsigned k = 0; k < sizeof ids / sizeof ids[0]; k++) if (tmp[ids[k]] > 0) return 1;
+    return 0;
+}
+
 /* ---------------------------------------------------------------------------------------------- one Update */
+void ffsound_heart_drop(void) __attribute__((weak));
+void ffsound_minion_hit(void) __attribute__((weak));
+void ffsound_minion_crit(void) __attribute__((weak));
 static void to_heart(unsigned long e, int sub) {
     int v, st;
     ffminion_heart_for(sub, &v, &st);
     float zero[2] = { 0, 0 };
     unsigned long h = g_spawn(*(const unsigned long *) (g_base + GAME_PTR), T_PICKUP, v, fpos(e), zero, 0, st, 0, 0);
     if (!h) return;                                           /* could not be made: the minion stays as it was */
+    if (ffsound_heart_drop) ffsound_heart_drop();
     *(unsigned char *) (e + E_DEAD) = 1;
     *(unsigned char *) (e + E_EXISTS) = 0;
     LOG_FEW(4, "ffminion: a minion went back to being a heart (5.%d.%d)", v, st);
@@ -340,8 +522,9 @@ static void contact_tick(unsigned long e, unsigned long owner, int bonus) {
         if (dx * dx + dy * dy > reach * reach) continue;
         int crit = rnd((unsigned) ffminion_crit_n(bonus, luck)) == 0;
         hit_enemy(c, ffminion_hit_damage(damage, bonus, crit));
+        if (crit) { if (ffsound_minion_crit) ffsound_minion_crit(); } else if (ffsound_minion_hit) ffsound_minion_hit();
         LOG_FEW(3, "ffminion: a minion hit an enemy (type %d) for %.2f%s", *(const int *) (c + E_TYPE), ffminion_hit_damage(damage, bonus, crit), crit ? " - CRITICAL" : "");
-        if (crit) { static int cl; if (cl++ < 20) LOG("ffminion: CRITICAL hit (x5 = %.2f) on an enemy of type %d", ffminion_hit_damage(damage, bonus, 1), *(const int *) (c + E_TYPE)); show_crit(e); }
+        if (crit) { static int cl; if (cl++ < 20) LOG("ffminion: CRITICAL hit (x5 = %.2f) on an enemy of type %d (luck %.1f, 1 in %d)", ffminion_hit_damage(damage, bonus, 1), *(const int *) (c + E_TYPE), (double) luck, ffminion_crit_n(bonus, luck)); show_crit(e); }
     }
 }
 
@@ -359,7 +542,10 @@ static void minion_ai(unsigned long e) {
     float *v = fvel(e);
 
     if (g_m[i].state == S_TRANSFORM) {                        /* Lua: "Transform", past frame 20 it becomes the heart */
-        v[0] *= 0.8f; v[1] *= 0.8f;
+        /* keeps sliding with the last velocity (friction), instead of stopping dead */
+        g_m[i].lvx *= 0.9f; g_m[i].lvy *= 0.9f;
+        move_on_grid(fpos(e), g_m[i].lvx, g_m[i].lvy, g_m[i].fly, &g_m[i].lvx, &g_m[i].lvy);
+        v[0] = g_m[i].lvx; v[1] = g_m[i].lvy;
         if (++g_m[i].tstart > TRANSFORM_AT) { to_heart(e, sub); g_m[i].e = 0; }
         return;
     }
@@ -369,6 +555,7 @@ static void minion_ai(unsigned long e) {
 
     if (!ffminion_room_active()) {                            /* the fight is over: back to being a heart */
         g_m[i].state = S_TRANSFORM; g_m[i].tstart = 0;
+        g_remove_overlay(sprite);                              /* Lua: sprite:RemoveOverlay() - else the whole minion's head stays on top of the Transform animation */
         g_play(sprite, "Transform", 1);
         return;
     }
@@ -382,16 +569,25 @@ static void minion_ai(unsigned long e) {
     /* THE MINION MOVES ITSELF: the engine did not move a pickup along its velocity in real runs (the minions stood still with
      * the AI running), so the steering keeps its own velocity (lvx, lvy), steers it every frame toward the target (Lua:
      * Lerp(vel, dir*speed, 0.3)) and adds it to the position here; the engine's own velocity is kept at 0 so nothing moves it twice */
+    grid_update();
+    if (g_m[i].age % 15 == 0) g_m[i].fly = owner_flies(owner);
+    int fly = g_m[i].fly;
     if (t) {
-        float dx = fpos(t)[0] - fpos(e)[0], dy = fpos(t)[1] - fpos(e)[1];
+        float ex = fpos(e)[0], ey = fpos(e)[1], gx = fpos(t)[0], gy = fpos(t)[1];
+        float aimx = gx, aimy = gy; int final = 1;
+        if (g_gw && !line_clear(ex, ey, gx, gy, fly)) {         /* Lua: no line of sight -> CatheryPathFinding around what is in the way */
+            if (!g_m[i].wvalid || g_m[i].age % 6 == 0) g_m[i].wvalid = path_step(ex, ey, gx, gy, fly, &g_m[i].wx, &g_m[i].wy);
+            if (g_m[i].wvalid) { aimx = g_m[i].wx; aimy = g_m[i].wy; final = 0; }
+        } else g_m[i].wvalid = 0;
+        float dx = aimx - ex, dy = aimy - ey;
         float len = __builtin_sqrtf(dx * dx + dy * dy);
-        float sp = len < 24.0f ? speed * (len / 24.0f) : speed;   /* arrive softly: at full speed over the target's centre the direction flipped every frame (the blinking) */
+        float sp = (final && len < 24.0f) ? speed * (len / 24.0f) : speed;   /* arrive softly: at full speed over the target's centre the direction flipped every frame (the blinking) */
         if (len > 0.001f) { dx = dx / len * sp; dy = dy / len * sp; }
         if (t == owner && len < 40.0f) { dx = 0; dy = 0; }      /* nothing to fight: wait beside the owner */
         g_m[i].lvx += (dx - g_m[i].lvx) * 0.3f;
         g_m[i].lvy += (dy - g_m[i].lvy) * 0.3f;
     } else { g_m[i].lvx *= 0.8f; g_m[i].lvy *= 0.8f; }
-    fpos(e)[0] += g_m[i].lvx; fpos(e)[1] += g_m[i].lvy; g_m[i].carried++;
+    move_on_grid(fpos(e), g_m[i].lvx, g_m[i].lvy, fly, &g_m[i].lvx, &g_m[i].lvy); g_m[i].carried++;
     {   /* minions do not stack on one pixel: each is pushed off any other minion closer than 14 units */
         unsigned long sn[SNAP]; unsigned sc = snapshot(sn);
         for (unsigned k = 0; k < sc; k++) {
@@ -401,7 +597,8 @@ static void minion_ai(unsigned long e) {
             if (od >= 14.0f) continue;
             if (od < 0.01f) { float an = (float) rnd(628) / 100.0f; ox = __builtin_cosf(an); oy = __builtin_sinf(an); od = 1.0f; }
             float push = (14.0f - od) * 0.25f;
-            fpos(e)[0] += ox / od * push; fpos(e)[1] += oy / od * push;
+            float px = fpos(e)[0] + ox / od * push, py = fpos(e)[1] + oy / od * push;
+            if (!g_gw || !box_blocked(px, py, fly)) { fpos(e)[0] = px; fpos(e)[1] = py; }
         }
     }
     v[0] = 0; v[1] = 0;
@@ -410,7 +607,7 @@ static void minion_ai(unsigned long e) {
     {
         float ax = v[0] < 0 ? -v[0] : v[0], ay = v[1] < 0 ? -v[1] : v[1];
         if (ax > ay * 1.3f) g_m[i].horiz = 1; else if (ay > ax * 1.3f) g_m[i].horiz = 0;     /* hysteresis: no flipping on the diagonal */
-        g_play(sprite, g_m[i].horiz ? "WalkHori" : "WalkVert", 0);
+        g_play(sprite, fly ? (g_m[i].horiz ? "FlyHori" : "FlyVert") : (g_m[i].horiz ? "WalkHori" : "WalkVert"), 0);   /* Lua: FlyHori/FlyVert (the wings) while the player can fly */
     }
     g_m[i].moved_set = 1;
     if (g_m[i].age == 90 || g_m[i].age == 240)
@@ -423,8 +620,40 @@ static void minion_ai(unsigned long e) {
 
 void ffheart_poll(void) __attribute__((weak));       /* ffheart.c: sees a hit the game did not report */
 
+/*
+ * MEASUREMENT for the bone orbitals (Lua fiend.lua:262-275, 309-325 spawns familiar 3.128 and sets fam.Player = player): the
+ * familiar's owner field is not known in this image, and writing a guessed offset could crash. So, for any familiar (type 3)
+ * that exists, this looks in its fields for the owning player's pointer and logs the offset - one line per familiar variant.
+ * Pick up any familiar item (Brother Bobby...) with Fiend, then read "ffminion: familiar variant".
+ */
+static void probe_familiars(void) {
+    static long long next;
+    long long t = now_ms();
+    if (t < next) return;
+    next = t + 1000;
+    unsigned long p = g_first_player();
+    if (!p) return;
+    unsigned long snap[SNAP];
+    unsigned n = snapshot(snap);
+    static int told[512];
+    for (unsigned i = 0; i < n; i++) {
+        unsigned long e = snap[i];
+        if (*(const int *) (e + E_TYPE) != 3) continue;
+        int v = *(const int *) (e + E_VARIANT);
+        if (v < 0 || v >= 512 || told[v]) continue;
+        told[v] = 1;
+        char line[200]; int ll = snprintf(line, sizeof line, "ffminion: familiar variant %d holds the player pointer at +", v);
+        int found = 0;
+        for (unsigned off = 0x300; off < 0x700 && ll < 170; off += 8)
+            if (g_readable((const void *) (e + off), 8) && *(const unsigned long *) (e + off) == p) { ll += snprintf(line + ll, sizeof line - ll, "%#x ", off); found++; }
+        if (!found) snprintf(line + ll, sizeof line - ll, "(none in 0x300-0x6ff)");
+        LOG("%s", line);
+    }
+}
+
 static void w_update(unsigned long e) {
     ff_flush();
+    probe_familiars();
     LOG_FEW(5, "ffminion: the Pickup::Update hook is running (first pickup: 5.%d.%d)", *(const int *) (e + E_VARIANT), *(const int *) (e + E_SUBTYPE));
     o_update(e);
     if (ffheart_poll) ffheart_poll();
@@ -450,6 +679,7 @@ static unsigned long real_spawn(unsigned long game, int type, int variant, const
     return ((fn_spawn) (g_base + FN_SPAWN))(game, type, variant, pos, vel, sp, sub, seed, flag);
 }
 static void real_play(void *s, const char *n, int f) { ((fn_play) (g_base + FN_SPRITE_PLAY))(s, n, f); }
+static void real_remove_overlay(void *s) { ((void (*)(void *)) (g_base + FN_SPRITE_REMOVE_OVERLAY))(s); }
 static void real_overlay(void *s, const char *n, int f) { ((fn_overlay) (g_base + FN_SPRITE_OVERLAY))(s, n, f); }
 
 /* at load, before the image is closed: the Pickup vtable's Update slot is ours (the way rangefix.c takes the knife's) */
@@ -461,7 +691,7 @@ void shim_ffminion_install(unsigned char *base) {
         return;
     }
     g_base = base;
-    g_spawn = real_spawn; g_play = real_play; g_overlay = real_overlay; g_list_now = shim_eid_list_now; g_readable = shim_eid_readable;
+    g_spawn = real_spawn; g_play = real_play; g_overlay = real_overlay; g_remove_overlay = real_remove_overlay; g_list_now = shim_eid_list_now; g_readable = shim_eid_readable;
     g_seed ^= (unsigned) now_ms();
     o_update = (fn_update) *slot;
     *slot = (unsigned long) w_update;
