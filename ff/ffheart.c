@@ -457,9 +457,41 @@ static int morph_decide(int sub, unsigned seed, float luck, int *nv, int *ns) {
     return 0;
 }
 
+/* FIEND'S RED TEARS (fiend.lua:521-534, mod:fiendTears: for Fiend (41) and Biend (42) every tear goes through
+ * mod:makeTearBloody -> customTearVariants.lua:136 RegularToBlood). The Lua does it with tear:ChangeVariant after the tear exists;
+ * here the variant is swapped BEFORE the engine makes the tear (Spawn type 2), so it is born with the blood sprite. The Lua
+ * table's first seven pairs are the game's own variants (TearVariant enum: BLUE 0 -> BLOOD 1, CUPID_BLUE 11 -> 12,
+ * NAIL 13 -> 23, PUPULA 14 -> 15, GODS_FLESH 16 -> 17, GLAUCOMA 24 -> 25, EYE 33 -> 34); the other three
+ * (HOMING_AMULET, FROG, PIN) are Fiend Folio's own tear variants, which this port does not have yet.
+ * NOT DONE: Malice's minion and Tainted Fiend (fiend.lua:527-528) are not player types of the port; ImpBabyMode
+ * (FiendConfig) has no menu here, so it is treated as off. */
+static int g_tear_logs;
+static int fiend_blood_tear(unsigned long spawner, int type, int variant) {
+    if (type != 2 || spawner < 0x10000) return variant;                     /* 2 = ENTITY_TEAR */
+    if (g_tear_logs < 6) {
+        LOG("fftears: a tear (variant %d) was spawned; spawner entity type %d, player type field %d", variant,
+            *(const int *) (spawner + 0x38), *(const int *) (spawner + PLAYER_TYPE));
+        g_tear_logs++;
+    }
+    if (*(const int *) (spawner + 0x38) != 1) return variant;       /* only when the spawner is a player (ENTITY_PLAYER = 1) */
+    int pt = *(const int *) (spawner + PLAYER_TYPE);
+    if (pt != FF_FIEND_TYPE && pt != FF_FIEND_TYPE + 1) return variant;
+    switch (variant) {
+    case 0:  return 1;
+    case 11: return 12;
+    case 14: return 15;
+    case 16: return 17;
+    case 13: return 23;
+    case 24: return 25;
+    case 33: return 34;
+    default: return variant;
+    }
+}
+
 static int g_spawn_logs;
 static unsigned long w_spawn(unsigned long game, int type, int variant, const float *pos, const float *vel,
                              unsigned long spawner, int subtype, int seed, int flag) {
+    variant = fiend_blood_tear(spawner, type, variant);
     unsigned long e = o_spawn(game, type, variant, pos, vel, spawner, subtype, seed, flag);
     if (!e || g_in_spawn || type != PICKUP || variant != V_HEART) return e;
     if (g_spawn_logs < 60 && !g_fiend_luck(&(float){0})) LOG("ffheart: a heart pickup 5.10.%d was spawned but no Fiend is in the room: it stays", *(const int *) (e + E_SUBTYPE));
