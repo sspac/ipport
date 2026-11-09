@@ -109,6 +109,8 @@ static float frnd(float a, float b) { return a + (b - a) * (float) (rnd(1000)) /
 
 /* the engine's own sound, not replaced by us */
 static void engine_sound(int id, float vol, float pitch) {
+    static int told;
+    if (told < 14) { told++; LOG("ffsound: our own play of sound %d (vol %.2f, pitch %.2f)%s", id, (double) vol, (double) pitch, g_mgr ? "" : " - NO sound manager yet"); }
     if (!o_sfx || !g_mgr) return;
     g_own++; o_sfx(g_mgr, id, 0, 0, vol, pitch, 0.0f); g_own--;
 }
@@ -137,6 +139,7 @@ static void w_sfx(unsigned long mgr, int id, int delay, int loop, float vol, flo
      * the vanilla grunt/death is cut and the character's own sound plays instead. Everyone else keeps the game's. */
     if (id == SND_HURT || id == SND_DEATH) {
         int c = ff_char();
+        static int seen; if (seen < 8) { seen++; LOG("ffsound: the game plays %s: first player is Fiend Folio character %d (0 = not one)", id == SND_HURT ? "HURT_GRUNT" : "ISAACDIES", c); }
         if (c) {
             int hurt = id == SND_HURT;
             switch (c) {
