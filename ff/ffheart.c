@@ -96,7 +96,8 @@ void shim_hook(void *at, void *to);
 #define PLAYER_TYPE   0x1738
 #define P_SOUL        0x16c4                /* soul-type halves, black ones inside */
 #define P_BLACK_MASK  0x16c8                /* bit i: whole soul heart i is black (AddBlackHearts writes it, 0x4ef230) */
-#define P_RED         0x16b8                /* red halves */
+#define P_RED         0x16bc                /* red halves (AddHearts writes it, spawner_stats.c) */
+#define P_MAXH        0x16b8                /* heart-container halves (AddMaxHearts writes it) */
 #define V_MINION      750
 #define STR_BLUE_HALF 0xa5aacd              /* "BlueHeartHalf" in the image: a plain soul heart */
 #define STR_BLUE_FULL 0xa5aadb              /* "BlueHeartFull" */
@@ -271,6 +272,7 @@ static void poll_note(unsigned long p) {
             return;
         }
 }
+static int g_red_logs;
 void ffheart_poll(void) {
     if (!g_base || g_conv || g_minion_busy) return;
     unsigned long game = *(const unsigned long *) (g_base + GAME_PTR);
@@ -281,6 +283,18 @@ void ffheart_poll(void) {
     for (unsigned i = 0; i < n && i < MAX_PL; i++) {
         unsigned long p = ((unsigned long (*)(unsigned long, int)) (g_base + FN_PLAYER_AT))(game + GAME_PLAYERS, (int) i);
         if (!p) continue;
+        /* a revive (1up, Dead Cat, Lazarus' Rags...) or any other path that writes the health fields directly bypasses the adders
+         * wrapped above: the red hearts and heart containers it leaves on a Fiend are turned into black soul halves the same way
+         * the adders do (fiend.lua:193-243: a container becomes BLACK_HEART, the same halves; red is not a Fiend's health). */
+        if (is_fiend(p)) {
+            int red = *(const int *) (p + P_RED), cont = *(const int *) (p + P_MAXH);
+            if (red > 0 || cont > 0) {
+                if (g_red_logs++ < 12) LOG("ffheart: the game left %d red and %d container halves on a Fiend (a revive?): they become black hearts", red, cont);
+                *(int *) (p + P_RED) = 0; *(int *) (p + P_MAXH) = 0;
+                as_black(p, (red > 0 ? red : 0) + (cont > 0 ? cont : 0));
+                poll_note(p);
+            }
+        }
         int k = -1;
         for (int j = 0; j < MAX_PL; j++) if (g_seen[j].p == p) { k = j; break; }
         if (k < 0 || !g_seen[k].ok) { poll_note(p); continue; }

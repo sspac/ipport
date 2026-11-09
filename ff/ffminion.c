@@ -376,7 +376,35 @@ static int grid_reread(void) {
     if (!safe_copy(raw, (const void *) g_grid_at, n)) return 0;
     return try_block(raw, n, g_grid_stride, g_grid_at);
 }
+/*
+ * The collision table the engine itself reads: one int per tile at room+0xe98 (0x5a1eec: ldr w8,[room + idx*4 + 3736] compared
+ * with the entity's own class), the tile count W*H from room+0x14 / room+0x18 (the room's size plus the wall ring; the same
+ * fields eid.c uses for room+0x30, the GridEntity pointers). Values are GridCollisionClass: 0 none, 1 pit, 2 object, 3 solid,
+ * 4 wall, 5 wall-except-player. Tried first; the search below is only the fallback if the room does not look like that.
+ */
+#define ROOM_COLL   0xe98
+#define ROOM_W      0x14
+#define ROOM_H      0x18
+static int grid_direct(unsigned long room) {
+    int wh[2];
+    if (!safe_copy(wh, (const void *) (room + ROOM_W), 4) || !safe_copy(wh + 1, (const void *) (room + ROOM_H), 4)) return 0;
+    if (wh[0] < 3 || wh[1] < 3 || wh[0] * wh[1] > 448) return 0;
+    unsigned raw[448];
+    unsigned long n = (unsigned long) wh[0] * wh[1] * 4;
+    if (!safe_copy(raw, (const void *) (room + ROOM_COLL), n)) return 0;
+    unsigned char cells[448];
+    int border = 0, walls = 0;
+    for (int i = 0; i < wh[0] * wh[1]; i++) {
+        cells[i] = raw[i] > 250 ? 250 : (unsigned char) raw[i];
+        int c = i % wh[0], r = i / wh[0];
+        if (c == 0 || r == 0 || c == wh[0] - 1 || r == wh[1] - 1) { border++; if (raw[i] >= 4) walls++; }
+    }
+    if (walls * 100 < border * 70) return 0;                       /* the ring of walls must be there */
+    memcpy(g_cells, cells, (size_t) (wh[0] * wh[1])); g_gw = wh[0]; g_gh = wh[1]; g_wallv = 4; g_grid_at = room + ROOM_COLL; g_grid_stride = 4;
+    return 1;
+}
 static void grid_search(unsigned long room) {
+    if (grid_direct(room)) return;
     static unsigned char buf[0x30000];
     unsigned long have = 0;
     for (unsigned long off = 0; off < sizeof buf; off += 0x1000) {
@@ -403,6 +431,7 @@ static void grid_update(void) {
     g_grid_checked = t;
     unsigned long room = g_room ? g_room() : 0;
     if (!room) return;
+    if (g_gw && grid_direct(room)) return;
     if (g_gw && grid_reread()) return;
     if (t - g_grid_searched < 700) return;                         /* not more than a search every 0.7 s */
     g_grid_searched = t;
@@ -412,7 +441,7 @@ static void grid_update(void) {
     else if (!g_gw && !had && g_grid_logs++ < 12) LOG("ffminion: no room grid found in the room object - minions walk without it");
 }
 static int tile_at(int c, int r) { if (c < 0 || r < 0 || c >= g_gw || r >= g_gh) return 255; return g_cells[c + r * g_gw]; }
-static int tile_blocked(int c, int r, int fly) { int v = tile_at(c, r); return v == 255 || (fly ? v == g_wallv : v != 0); }
+static int tile_blocked(int c, int r, int fly) { int v = tile_at(c, r); return v == 255 || (fly ? v >= 4 : v != 0); }   /* a flyer only meets walls; the rest meets pits, objects, rocks too */
 static int xy_blocked(float x, float y, int fly) { return tile_blocked((int) __builtin_floorf(x / 40.0f), (int) __builtin_floorf((y - 80.0f) / 40.0f), fly); }
 static int box_blocked(float x, float y, int fly) {
     const float r = 6.0f;
@@ -482,12 +511,18 @@ static int owner_flies(unsigned long owner) {
 void ffsound_heart_drop(void) __attribute__((weak));
 void ffsound_minion_hit(void) __attribute__((weak));
 void ffsound_minion_crit(void) __attribute__((weak));
-static void to_heart(unsigned long e, int sub) {
+typedef void (*fn_setframe)(void *, const char *, int);
+#define FN_SPRITE_SETFRAME 0x89eab8
+static void to_heart(unsigned long e, int sub, float vx, float vy) {
     int v, st;
     ffminion_heart_for(sub, &v, &st);
-    float zero[2] = { 0, 0 };
+    float zero[2] = { vx, vy };                              /* it carries on with the minion's slide (Lua morphs the same entity, which keeps its velocity) */
     unsigned long h = g_spawn(*(const unsigned long *) (g_base + GAME_PTR), T_PICKUP, v, fpos(e), zero, 0, st, 0, 0);
-    if (!h) return;                                           /* could not be made: the minion stays as it was */
+    if (!h) return;
+    /* Lua fiend.lua:1105-1107: sprite:Play("Appear", true) and at once sprite:Update() - the first frame of the heart's Appear is
+     * already past. A fresh pickup starts Appear from frame 0, whose first frames are empty: a few invisible frames between the
+     * minion and the heart. Start it one frame in, as the Lua does. */
+    { fn_setframe sf = (fn_setframe) (g_base + FN_SPRITE_SETFRAME); if (g_base) sf((void *) (h + E_SPRITE), "Appear", 1); }                                           /* could not be made: the minion stays as it was */
     if (ffsound_heart_drop) ffsound_heart_drop();
     *(unsigned char *) (e + E_DEAD) = 1;
     *(unsigned char *) (e + E_EXISTS) = 0;
@@ -546,7 +581,7 @@ static void minion_ai(unsigned long e) {
         g_m[i].lvx *= 0.9f; g_m[i].lvy *= 0.9f;
         move_on_grid(fpos(e), g_m[i].lvx, g_m[i].lvy, g_m[i].fly, &g_m[i].lvx, &g_m[i].lvy);
         v[0] = g_m[i].lvx; v[1] = g_m[i].lvy;
-        if (++g_m[i].tstart > TRANSFORM_AT) { to_heart(e, sub); g_m[i].e = 0; }
+        if (++g_m[i].tstart > TRANSFORM_AT) { to_heart(e, sub, g_m[i].lvx, g_m[i].lvy); g_m[i].e = 0; }
         return;
     }
     if (g_m[i].age < DROP_FRAMES) { v[0] *= 0.8f; v[1] *= 0.8f; return; }          /* "Drop" */

@@ -162,7 +162,7 @@ void ffcharmenu_tick(void) {
  * by writing the layer's visible byte (GetLayer(sprite, id) at 0x89e710, byte +124): 0x5e67e0 turns it ON for a locked vanilla
  * character (index m+0x40 < 18) and 0x5e68dc turns it OFF for the others - but the branch for index >= 18 skips both, so the
  * Fiend Folio slots show whatever the neighbour left (Bethany's or Jacob & Esau's "locked" text). Here, after the engine's own
- * update, a slot past Jacob & Esau (index 18) gets the layer set from ff_locked(): shown for a locked character, hidden for an
+ * update, a slot past the last vanilla slot (index 17 is the last one the engine handles) gets the layer set from ff_locked(): shown for a locked character, hidden for an
  * unlocked one. Every Fiend Folio character is unlocked for now: when they get unlock methods, ff_locked() is the one place.
  */
 #define FN_GET_LAYER 0x89e710
@@ -170,10 +170,19 @@ void ffcharmenu_tick(void) {
 #define L_UNLOCKED_BY 16
 static int ff_locked(int slot) { (void) slot; return 0; }
 
+#define FN_SET_LAYER_FRAME 0x89ebf8   /* (sprite, layer, frame): what 0x5e6908 / 0x5e6810 call with layer 3 and 1 (locked) / 0 (unlocked) */
+#define L_NAME 3
 static void set_unlocked_by(unsigned long sprite, int shown) {
     if (!sprite || *(const unsigned long *) (sprite + 0x10) != 0x8000000000000030ul || !*(const unsigned long *) sprite) return;
-    unsigned long layer = ((unsigned long (*)(unsigned long, unsigned long)) (g_base + FN_GET_LAYER))(sprite, L_UNLOCKED_BY);
-    if (layer) *(unsigned char *) (layer + 124) = (unsigned char) (shown != 0);
+    unsigned long (*get_layer)(unsigned long, unsigned long) = (unsigned long (*)(unsigned long, unsigned long)) (g_base + FN_GET_LAYER);
+    /* the engine's block for a vanilla slot (0x5e67e0 locked / 0x5e68dc unlocked): "Unlocked By" layer shown or hidden, the "Name"
+     * layer visible and on its locked (1) or normal (0) frame. Past Jacob & Esau it is skipped, so the slot kept the neighbour's. */
+    unsigned long l16 = get_layer(sprite, L_UNLOCKED_BY), l3 = get_layer(sprite, L_NAME);
+    if (l16) *(unsigned char *) (l16 + 124) = (unsigned char) (shown != 0);
+    if (l3) *(unsigned char *) (l3 + 124) = 1;
+    static const uint32_t want[2] = { 0xf9401c08u, 0xb4000068u };
+    const uint32_t *fn = (const uint32_t *) (g_base + FN_SET_LAYER_FRAME);
+    if (fn[0] == want[0] && fn[1] == want[1]) ((void (*)(unsigned long, int, int)) (g_base + FN_SET_LAYER_FRAME))(sprite, L_NAME, shown != 0);
 }
 
 static void w_update(unsigned long m) {
@@ -182,12 +191,12 @@ static void w_update(unsigned long m) {
     if (!g_done) fill(m);
     o_update(m);
     int idx = *(const int *) (m + M_INDEX);
-    if (idx > 18) {
+    if (idx >= 18) {          /* the engine's own block covers 0..17 (cmp w22,#18 at 0x5e6774); Fiend is slot 18 */
         int shown = ff_locked(idx);
         set_unlocked_by(m + M_CENTRE, shown);
         if (g_alt_centre) set_unlocked_by(g_alt_centre, shown);
         static int last = -1, n;
-        if (idx != last && n++ < 12) LOG("ffcharmenu: slot %d is past Jacob & Esau: the Unlocked By layer is %s", idx, shown ? "shown" : "hidden");
+        if (idx != last && n++ < 12) LOG("ffcharmenu: slot %d is a Fiend Folio slot (engine block skipped): the Unlocked By layer is %s", idx, shown ? "shown" : "hidden");
         last = idx;
     }
 }
