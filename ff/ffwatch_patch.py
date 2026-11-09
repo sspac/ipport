@@ -71,3 +71,28 @@ if 'ffsound: miss' not in s:
     if s.count(old) != 1: sys.exit('pack.c: ffsound miss anchor found %d times' % s.count(old))
     open(sys.argv[1], 'w', encoding='utf-8', newline='').write(s.replace(old, new, 1))
     print('ffsound miss log added')
+
+# ffsound: the game opens a sample by a RELATIVE path ("sfx/fiendfolio/...": the log said Failed to open sample), which inner_path
+# rejects because it does not start with the resource root, and nothing was logged. A relative path is tried under each resources folder.
+s = open(sys.argv[1], encoding='utf-8', newline='').read()
+if 'ffsound: relative' not in s:
+    old = "    if (inner_path(path, inside, sizeof(inside)) == (size_t) -1) return NULL;\n    const entry_t *hit_ = find(inside);\n"
+    new = """    if (strstr(path, "fiendfolio")) {                     /* ffsound: relative - every way the game asks for one of ours, as it spelled it */
+        int shim_report_active(void); void report_line(const char *kind, const char *text);
+        static int raw_; if (raw_ < 24 && shim_report_active()) { raw_++; char r2_[400]; snprintf(r2_, sizeof(r2_), "the game asks for \\"%s\\"", path); report_line("pack", r2_); }
+    }
+    if (inner_path(path, inside, sizeof(inside)) == (size_t) -1) {
+        if (path[0] == '/' || strncmp(path, "sfx/", 4)) return NULL;
+        static const char *const roots_[] = { "repentance-resources/data/", "rebirth-resources/data/" };
+        for (int r_ = 0; r_ < 2; r_++) {
+            snprintf(inside, sizeof(inside), "%s%s", roots_[r_], path);
+            const entry_t *rel_ = find(inside);
+            if (rel_) return rel_;
+        }
+        return NULL;
+    }
+    const entry_t *hit_ = find(inside);
+"""
+    if s.count(old) != 1: sys.exit('pack.c: ffsound relative anchor found %d times' % s.count(old))
+    open(sys.argv[1], 'w', encoding='utf-8', newline='').write(s.replace(old, new, 1))
+    print('ffsound relative lookup added')

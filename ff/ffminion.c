@@ -526,7 +526,12 @@ static void to_heart(unsigned long e, int sub, float vx, float vy) {
     if (!h) return;
     /* The minion's Transform animation ends on the ground, and a fresh heart pickup starts its "Appear" in the air (it jumps up and
      * lands): that was the pop between the two. The minion has landed (TRANSFORM_AT); the heart takes over on the floor, in its Idle. */
-    if (g_play) g_play((void *) (h + E_SPRITE), "Idle", 1);                                           /* could not be made: the minion stays as it was */
+    if (g_play) g_play((void *) (h + E_SPRITE), "Idle", 1);
+    /* Playing "Idle" alone left the heart un-collectable until the room was reloaded (user's video). Pickup::Update (0x7193a4) keeps a
+     * state at +0x1e4: 0 while it appears; when "Appear" is seen finishing it plays "Idle" and stores 4 (0x71a908-0x71a920), and only
+     * from state != 0 does it count frames (+0x608) and set the collectable flag +0x1c1 (0x719918-0x719938). Since the Idle is set here, the
+     * state the engine would have reached is set with it. */
+    *(int *) (h + 0x1e4) = 4;
     if (ffsound_heart_drop) ffsound_heart_drop();
     *(unsigned char *) (e + E_DEAD) = 1;
     *(unsigned char *) (e + E_EXISTS) = 0;
