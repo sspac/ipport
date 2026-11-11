@@ -159,6 +159,7 @@ static unsigned long real_room(void) {
 static unsigned long (*g_room)(void) = real_room;
 
 static unsigned snapshot(unsigned long *out);
+static void fb_minion_credit(unsigned long player, float dmg, unsigned long e);     /* fffireball.h */
 static int target_level(const unsigned long *snap, unsigned n, int *count);
 
 /*
@@ -596,6 +597,7 @@ static void contact_tick(unsigned long e, unsigned long owner, int bonus) {
         if (dx * dx + dy * dy > reach * reach) continue;
         int crit = rnd((unsigned) ffminion_crit_n(bonus, luck)) == 0;
         hit_enemy(c, ffminion_hit_damage(damage, bonus, crit));
+        fb_minion_credit(owner, ffminion_hit_damage(damage, bonus, crit), c);
         if (crit) { if (ffsound_minion_crit) ffsound_minion_crit(); } else if (ffsound_minion_hit) ffsound_minion_hit();
         LOG_FEW(3, "ffminion: a minion hit an enemy (type %d) for %.2f%s", *(const int *) (c + E_TYPE), ffminion_hit_damage(damage, bonus, crit), crit ? " - CRITICAL" : "");
         if (crit) { static int cl; if (cl++ < 20) LOG("ffminion: CRITICAL hit (x5 = %.2f) on an enemy of type %d (luck %.1f, 1 in %d)", ffminion_hit_damage(damage, bonus, 1), *(const int *) (c + E_TYPE), (double) luck, ffminion_crit_n(bonus, luck)); show_crit(e); }
@@ -799,6 +801,15 @@ int ffminion_spawn(unsigned long player, int sub) {
     return 1;
 }
 
+/* The player's frame: the double tap before the game's update, the fireballs after it, then ffheart's hit poll. ffheart's poll used to hang on this
+ * same slot; with ours installed first it can no longer wrap it (a real run: "slot 4 holds ..., not code"), so it was left to the pickups and
+ * hits were missed or seen late. It runs from here now. */
+static void fb_player_frame(unsigned long p, void (*orig)(unsigned long)) {
+    fb_before_update(p);
+    orig(p);
+    fb_after_update(p);
+    if (ffheart_poll) ffheart_poll();
+}
 #ifndef FF_HOST_TEST
 static unsigned long real_spawn(unsigned long game, int type, int variant, const float *pos, const float *vel,
                                 unsigned long sp, int sub, int seed, int flag) {
@@ -819,11 +830,7 @@ static void real_overlay(void *s, const char *n, int f) { ((fn_overlay) (g_base 
 #define FN_NPC_TAKE 0x69876c
 static fn_update o_player_update, o_familiar_update;
 static fn_take o_npc_take;
-static void w_player_update(unsigned long p) {
-    fb_before_update(p);
-    o_player_update(p);
-    fb_after_update(p);
-}
+static void w_player_update(unsigned long p) { fb_player_frame(p, o_player_update); }
 static void w_familiar_update(unsigned long f) {
     o_familiar_update(f);
     fb_familiar_update(f);
