@@ -35,10 +35,10 @@ const void *shim_pack_peek(const char *inner, long *length);
 void shim_pack_add(const char *path, const void *data, long length);
 
 /* the new sound ids, appended after the game's 833 (sounds.xml gets them, in memory only, the table is made 833 + FF_NSOUNDS long) */
-#define FF_NSOUNDS 7
+#define FF_NSOUNDS 9
 /* a sound record holds at most 7 samples (0x7f02bc: count at record+456, cmp #7 -> "exceeding max samples"), so the 8 hurt
  * samples are two sounds of 4 and one of them is picked at random */
-enum { ID_HURT_A = 833, ID_HURT_B, ID_DEATH, ID_DROP, ID_PICKUP, ID_PICKUP_RARE, ID_MINION };
+enum { ID_HURT_A = 833, ID_HURT_B, ID_DEATH, ID_DROP, ID_PICKUP, ID_PICKUP_RARE, ID_MINION, ID_FB_LAUNCH, ID_FB_LAND };
 static const struct { int id; const char *files[4]; } FF_SND[FF_NSOUNDS] = {
     { ID_HURT_A, { "fiiiiend/fiend_hurt01.wav", "fiiiiend/fiend_hurt02.wav", "fiiiiend/fiend_hurt03.wav", "fiiiiend/fiend_hurt04.wav" } },
     { ID_HURT_B, { "fiiiiend/fiend_hurt05.wav", "fiiiiend/fiend_hurt06.wav", "fiiiiend/fiend_hurt07.wav", "fiiiiend/fiend_hurt08.wav" } },
@@ -47,6 +47,8 @@ static const struct { int id; const char *files[4]; } FF_SND[FF_NSOUNDS] = {
     { ID_PICKUP, { "fiend_heart_pickup.wav" } },
     { ID_PICKUP_RARE, { "fiend_heart_pickup2.wav" } },
     { ID_MINION, { "minion1.wav", "minion2.wav", "minion3.wav" } },
+    { ID_FB_LAUNCH, { "FireBallLaunch.wav" } },          /* mod.Sounds.FireballLaunch (fiend.lua LaunchFireball) */
+    { ID_FB_LAND, { "FireballLand.wav" } },              /* mod.Sounds.FireballLand (fiend.lua explodeFiendProj) */
 };
 #define ID_HURT hurt_id()
 static int hurt_id(void);
@@ -65,7 +67,7 @@ void ffsound_on_open(const char *inner) {
     const char *end = 0;
     for (const char *p = xml; p + 9 <= xml + n; p++) if (!memcmp(p, "</sounds>", 9)) end = p;
     if (!end) { LOG("ffsound: no </sounds> in %s", inner); return; }
-    char add[2048]; int al = 0;
+    char add[4096]; int al = 0;
     for (int i = 0; i < FF_NSOUNDS; i++) {
         al += snprintf(add + al, sizeof add - al, "\t<sound id=\"%d\">\n", FF_SND[i].id);
         for (int k = 0; k < 4 && FF_SND[i].files[k]; k++) {
@@ -90,7 +92,7 @@ void ffsound_on_open(const char *inner) {
     memcpy(out + (end - xml), add, (size_t) al);
     memcpy(out + (end - xml) + al, end, (size_t) (n - (end - xml)));
     shim_pack_add(inner, out, on);                      /* never freed: the pack keeps the pointer */
-    LOG("ffsound: %s now has %d more sounds (ids %d..%d); wavs under %ssfx/fiendfolio/ (and the other resources folder)", inner, FF_NSOUNDS, ID_HURT_A, ID_MINION, dir);
+    LOG("ffsound: %s now has %d more sounds (ids %d..%d); wavs under %ssfx/fiendfolio/ (and the other resources folder)", inner, FF_NSOUNDS, ID_HURT_A, ID_FB_LAND, dir);
 }
 
 #ifndef FF_HOST_TEST
@@ -161,6 +163,11 @@ void ffsound_pickup_begin(void) { g_swallow++; }
 void ffsound_pickup_end(int collected) { if (g_swallow > 0) g_swallow--; if (collected) engine_sound(rnd(1000) == 0 ? ID_PICKUP_RARE : ID_PICKUP, 1.0f, 1.0f); }
 void ffsound_heart_drop(void) { engine_sound(ID_DROP, 0.8f, 1.0f); }
 void ffsound_minion_hit(void) { engine_sound(SND_MEATY, 0.2f, frnd(1.5f, 2.0f)); }
+/* the fireballs (fffireball.h): the mod's own two sounds and the game's own ids, played by us (vanilla ids measured from the game's sounds.xml: 483 flame_burst, 536 flamethrower end, 182 boss explosions, 471 candle_light) */
+void ffsound_fireball(int what, float vol, float pitch) {
+    static const int ids[] = { ID_FB_LAUNCH, ID_FB_LAND, 483, 536, 182, 471 };
+    if (what >= 0 && what < 6) engine_sound(ids[what], vol, pitch);
+}
 void ffsound_minion_crit(void) { engine_sound(ID_MINION, 0.6f, frnd(0.8f, 1.2f)); }
 
 /* make the game's sounds table FF_NSOUNDS longer: resize(833) at 0x7eff74 and the two id bounds (cmp #833, cmp #832) */

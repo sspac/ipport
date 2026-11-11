@@ -197,6 +197,7 @@ void ffminion_room_info(int *a, int *b, int *d, int *targets);
 #define SUB_MINION_BLACK 1
 #define SUB_MINION_IMMORAL 2
 #define SUB_MINION_HALF 3
+#define SUB_MINION_HALF_BLACK 16
 
 /* the hearts of the top run, from the top: hp of heart i, given the halves left */
 static int hp_of(int i, int halves) { return (i == (halves + 1) / 2 - 1 && (halves & 1)) ? 1 : 2; }
@@ -248,8 +249,7 @@ static void hit_makes_minions(unsigned long p, int before, unsigned mask, unsign
         LOG("ffheart: hit -> the last heart reached (#%d) is %s: %d halves become minions", top, imm ? "immoral" : "black", minions);
     for (; minions > 0; minions -= 2) {
         if (imm)      ffminion_spawn(p, minions >= 2 ? SUB_MINION_IMMORAL : SUB_MINION_HALF);
-        else if (minions >= 2) ffminion_spawn(p, SUB_MINION_BLACK);
-        /* a leftover black half is an EFFECT minion in the Lua (FIEND_MINION_EFFECT): not ported yet */
+        else ffminion_spawn(p, minions >= 2 ? SUB_MINION_BLACK : SUB_MINION_HALF_BLACK);     /* a leftover black half is a hollow minion (Lua FIEND_MINION_EFFECT) */
     }
 }
 
@@ -293,6 +293,19 @@ void ffheart_poll(void) {
                 *(int *) (p + P_RED) = 0; *(int *) (p + P_MAXH) = 0;
                 as_black(p, (red > 0 ? red : 0) + (cont > 0 ? cont : 0));
                 poll_note(p);
+            }
+        }
+        if (is_fiend(p)) {
+            /* A revive also writes PLAIN SOUL hearts straight into the fields (user's test: the revive gave soul hearts, and a Fiend only has
+             * black and immoral ones: fiend.lua:193-243 turns every soul gain black). A heart that is neither in the immoral mask nor in the
+             * black mask is a plain soul one: it is marked black here (the same halves, only the kind changes). */
+            int hearts = (soul_halves(p) + 1) / 2;
+            unsigned want = hearts >= 32 ? 0xffffffffu : hearts <= 0 ? 0u : ((1u << hearts) - 1u);
+            unsigned imm = *imm_slot(p), blk = *(const unsigned *) (p + P_BLACK_MASK), plain = want & ~imm & ~blk;
+            if (plain) {
+                static int soul_logs;
+                if (soul_logs++ < 12) LOG("ffheart: %d plain soul heart(s) on a Fiend (mask %#x, black %#x, immoral %#x): made black (a revive?)", __builtin_popcount(plain), plain, blk, imm);
+                *(unsigned *) (p + P_BLACK_MASK) = blk | plain;
             }
         }
         int k = -1;
@@ -355,6 +368,21 @@ void ffheart_see_player(unsigned long p) {
 static void w_soul(unsigned long p, int halves) {
     ff_flush();
     /* a Fiend's direct soul heart is black (his rule); an immoral pickup being collected is the one thing that is not */
+    if (halves == 1 && !g_conv && !g_immoral && is_fiend(p) && *(const int *) (p + P_RED) + soul_halves(p) <= 0) {
+        /* THE FOUR "SAVED AT ZERO" HEALS (fiend.lua:281-299; customhealthapi/reimpl/damage.lua:476-500 NoKill, 505-545 Heartbreak,
+         * 548-575 Spirit Shackles, 655-690 Glass Cannon): each one fires when the player's total health is 0 and heals ONE half; for a
+         * Fiend the Lua turns that half into an IMMORAL one (PRE_*_HEAL -> "IMMORAL_HEART", 1) instead of what the game would give
+         * (a soul half, which his rule would make black). All four are seen here as "one half arrives while there is no health at all".
+         * NOT DONE: Greed's Gullet (GET_GULLET_HEART_KEY): its heart arrives as a container, the same call as any item's, so it is not
+         * told apart. */
+        static int em_logs;
+        if (em_logs++ < 12) LOG("ffheart: a Fiend with no health left was healed one half: it is made an IMMORAL half (the Lua's Shackles/Heartbreak/Glass Cannon/NoKill rule)");
+        int before0 = soul_halves(p);
+        o_soul(p, 1);
+        imm_after(p, before0, soul_halves(p), 1);
+        poll_note(p);
+        return;
+    }
     if (halves > 0 && !g_conv && !g_immoral && is_fiend(p)) { as_black(p, halves); poll_note(p); return; }
     int before = soul_halves(p);
     unsigned mask = *imm_slot(p), black = *(const unsigned *) (p + P_BLACK_MASK);

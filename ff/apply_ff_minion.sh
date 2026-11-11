@@ -6,6 +6,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 CPP=port/app/src/main/cpp
 cp "$HERE/ffheart.c" "$CPP/ffheart.c"        # the hit hook and the minion collision block live here
 cp "$HERE/ffminion.c" "$CPP/ffminion.c"
+[ -f "$HERE/fffireball.h" ] && cp "$HERE/fffireball.h" "$CPP/fffireball.h"
 cp "$HERE/ffsay.h" "$CPP/ffsay.h"
 cp "$HERE/ffchars.c" "$CPP/ffchars.c"
 python3 - <<'PY'

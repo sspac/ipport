@@ -87,6 +87,10 @@
 #define SUB_BLACK 1
 #define SUB_IMMORAL 2
 #define SUB_HALF_IMMORAL 3
+#define PICKUP_FRICTION 0.965f
+#define SUB_HALF_BLACK 16           /* the Lua's FIEND_MINION_EFFECT (1000.1736.1, 'hollow'): here a pickup like the half immoral one, entities2.xml 5.750.16 */
+#define V_POOF 15
+#define V_SPLAT 2
 #define V_HEART 10
 #define V_IMMORAL 1024
 #define V_HALF_IMMORAL 1025
@@ -238,6 +242,7 @@ static struct {
     int age, state, tick_off, head, tstart, moved_set, carried, horiz, wvalid, fly;
     float wx, wy;
     float lastx, lasty, lvx, lvy, tmp[2];
+    unsigned long skip; int skip_until; float chk_x, chk_y;     /* a target it could not get to, left alone for a while */
 } g_m[MAXM];
 
 static struct { unsigned long e; long long born; } g_crit[16];
@@ -481,18 +486,28 @@ static int path_step(float fx, float fy, float tx, float ty, int fly, float *wx,
             dist[nc + nr * W] = (short) (dist[cur] + 1); q[qt++] = (short) (nc + nr * W);
         }
     }
-    int here = dist[sc + sr * W];
-    int best = -1, bd = 32000;
-    for (int k = 0; k < 8; k++) {
-        int nc = sc + dc[k], nr = sr + dr[k];
-        if (nc < 0 || nr < 0 || nc >= W || nr >= H) continue;
-        int d = dist[nc + nr * W];
-        if (d < 0 || (here >= 0 && d >= here) || d >= bd) continue;
-        if (k >= 4 && (tile_blocked(sc + dc[k], sr, fly) || tile_blocked(sc, sr + dr[k], fly))) continue;
-        bd = d; best = k;
+    /* Follow the way down the distance field and aim at the FARTHEST tile on it that can be seen from here in a straight line (the
+     * path pulled tight): aiming at the next tile's centre made a minion rub along a rock's corner and stop in a room of rock columns. */
+    int cc = sc, cr = sr, here = dist[sc + sr * W], first = 1;
+    if (here < 0) return 0;                                         /* the target cannot be reached from this tile */
+    float bx = 0, by = 0; int have = 0;
+    for (int step = 0; step < 24 && here > 0; step++) {
+        int best = -1, bd = 32000;
+        for (int k = 0; k < 8; k++) {
+            int nc = cc + dc[k], nr = cr + dr[k];
+            if (nc < 0 || nr < 0 || nc >= W || nr >= H) continue;
+            int d = dist[nc + nr * W];
+            if (d < 0 || d >= here || d >= bd) continue;
+            if (k >= 4 && (tile_blocked(cc + dc[k], cr, fly) || tile_blocked(cc, cr + dr[k], fly))) continue;
+            bd = d; best = k;
+        }
+        if (best < 0) break;
+        cc += dc[best]; cr += dr[best]; here = dist[cc + cr * W];
+        float cx = 20.0f + 40.0f * cc, cy = 100.0f + 40.0f * cr;
+        if (first || line_clear(fx, fy, cx, cy, fly)) { bx = cx; by = cy; have = 1; first = 0; } else break;
     }
-    if (best < 0) return 0;
-    *wx = 20.0f + 40.0f * (sc + dc[best]); *wy = 100.0f + 40.0f * (sr + dr[best]);
+    if (!have) return 0;
+    *wx = bx; *wy = by;
     return 1;
 }
 static void move_on_grid(float *p, float vx, float vy, int fly, float *lvx, float *lvy) {
@@ -541,7 +556,7 @@ static void to_heart(unsigned long e, int sub, float vx, float vy) {
     LOG_FEW(4, "ffminion: a minion went back to being a heart (5.%d.%d)", v, st);
 }
 
-static unsigned long pick_target(unsigned long e, unsigned long owner) {
+static unsigned long pick_target(unsigned long e, unsigned long owner, unsigned long skip) {
     unsigned long snap[SNAP];
     unsigned n = snapshot(snap);
     unsigned long best = 0;
@@ -549,13 +564,25 @@ static unsigned long pick_target(unsigned long e, unsigned long owner) {
     int lvl = target_level(snap, n, 0);
     for (unsigned i = 0; lvl >= 0 && i < n; i++) {
         unsigned long c = snap[i];
-        if (c == e || !target_ok(c, lvl)) continue;
+        if (c == e || c == skip || !target_ok(c, lvl)) continue;
         float dx = fpos(c)[0] - fpos(e)[0], dy = fpos(c)[1] - fpos(e)[1], d = dx * dx + dy * dy;
         if (d < bd) { bd = d; best = c; }
     }
     return best ? best : owner;
 }
 
+/* An effect's colour and scale as the Lua sets them (entity.Color = Color(...), entity.SpriteScale *= x). Measured elsewhere in the port, not
+ * on this effect: the entity's SpriteScale is two floats at entity+0x12c (rangefix.c: the knife's, the render grows the sprite by it) and
+ * the sprite's Color sits in the sprite object at +0xe8 (tint rgba) and +0x108 (offset rgb) (spawner.c SPRITE_TINT_AT/OFFSET_AT, written
+ * there for a card's sprite). Read back and logged, so a screen that shows it unpainted says exactly what the engine kept. */
+static void paint_effect(unsigned long ef, float r, float g, float b, float a, float ro, float go, float bo, float scale) {
+    if (!ef) return;
+    float *tint = (float *) (ef + E_SPRITE + 0xe8), *off = (float *) (ef + E_SPRITE + 0x108), *sc = (float *) (ef + 0x12c);
+    tint[0] = r; tint[1] = g; tint[2] = b; tint[3] = a; off[0] = ro; off[1] = go; off[2] = bo;
+    if (scale != 1.0f) { sc[0] *= scale; sc[1] *= scale; }
+    static int logs;
+    if (logs++ < 4) LOG("ffminion: effect %p painted: tint %.2f %.2f %.2f %.2f, offset %.2f %.2f %.2f, entity scale %.2f x %.2f (read back)", (void *) ef, tint[0], tint[1], tint[2], tint[3], off[0], off[1], off[2], sc[0], sc[1]);
+}
 static void contact_tick(unsigned long e, unsigned long owner, int bonus) {
     float damage = *(const float *) (owner + P_DAMAGE), luck = *(const float *) (owner + P_LUCK);
     unsigned long snap[SNAP];
@@ -581,16 +608,21 @@ static void minion_ai(unsigned long e) {
     unsigned long owner = g_m[i].owner;
     if (!owner) return;
     int sub = *(const int *) (e + E_SUBTYPE);
-    int bonus = sub == SUB_BLACK;
+    int bonus = sub == SUB_BLACK || sub == SUB_HALF_BLACK;    /* fiendBonus (Lua flags it on the hollow one too) */
     void *sprite = (void *) (e + E_SPRITE);
     sweep_crits();
+    if (g_m[i].age == 0 && sub == SUB_HALF_BLACK) g_m[i].head = (int) rnd(10);   /* Lua: hollow -> data.headframe = random(10) - 1 (ball-like heads) */
     if (g_m[i].age == 0) { g_play(sprite, "Drop", 1); LOG_FEW(2, "ffminion: first Update of a minion (sub %d): the AI runs", sub); }
     g_m[i].age++;
     float *v = fvel(e);
 
     if (g_m[i].state == S_TRANSFORM) {                        /* Lua: "Transform", past frame 20 it becomes the heart */
         /* keeps sliding with the last velocity (friction), instead of stopping dead */
-        g_m[i].lvx *= 0.9f; g_m[i].lvy *= 0.9f;
+        /* The slide decays by the pickup's own friction: Pickup init multiplies Entity::Friction (+0x340, 1.0 from entities2.xml) by the
+         * float at 0x947bf8 = 0.965 for every pickup that is not a collectible (0x71a598-0x71a5b0, whose 0x9460a0 = 0.8 is the item's).
+         * The Lua's minion is such a pickup, so over its 43 frames of Transform and Appear it keeps 0.965^43 = 22% of its speed, and the
+         * heart that comes out carries it on. The 0.9 used before kept 1% - the heart seemed to stop dead. */
+        g_m[i].lvx *= PICKUP_FRICTION; g_m[i].lvy *= PICKUP_FRICTION;
         move_on_grid(fpos(e), g_m[i].lvx, g_m[i].lvy, g_m[i].fly, &g_m[i].lvx, &g_m[i].lvy);
         v[0] = g_m[i].lvx; v[1] = g_m[i].lvy;
         if (g_m[i].tstart == MORPH_AT + 1) g_play(sprite, "Appear", 1);              /* Lua: sprite:Play("Appear", true) after the Morph */
@@ -601,6 +633,19 @@ static void minion_ai(unsigned long e) {
 
     g_overlay(sprite, "Head", g_m[i].head);                   /* the head is an overlay animation of its own */
 
+    if (!ffminion_room_active() && sub == SUB_HALF_BLACK) {   /* fiend.lua:1075-1083: a hollow minion never goes back to being a heart, it vanishes in a puff of smoke */
+        float zero[2] = { 0.0f, 0.0f };
+        unsigned long game = *(const unsigned long *) (g_base + GAME_PTR);
+        unsigned long ded = g_spawn(game, T_EFFECT, V_SPLAT, fpos(e), zero, 0, 1, 0, 0);
+        paint_effect(ded, 0.0f, 0.0f, 0.0f, 0.7f, 0.0f, 0.0f, 0.0f, 1.0f);                   /* dedbaby.Color = Color(0,0,0,0.7,0,0,0) */
+        unsigned long poof = g_spawn(game, T_EFFECT, V_POOF, fpos(e), zero, 0, 0, 0, 0);
+        paint_effect(poof, 0.3f, 0.3f, 0.3f, 1.0f, 10.0f / 255.0f, 0.0f, 10.0f / 255.0f, 0.5f);   /* poof.SpriteScale *= 0.5; poof.Color = Color(0.3,0.3,0.3,1,10/255,0,10/255) */
+        *(unsigned char *) (e + E_DEAD) = 1;
+        *(unsigned char *) (e + E_EXISTS) = 0;
+        g_m[i].e = 0;
+        LOG_FEW(4, "ffminion: a half black (hollow) minion vanished in a puff of smoke");
+        return;
+    }
     if (!ffminion_room_active()) {                            /* the fight is over: back to being a heart */
         g_m[i].state = S_TRANSFORM; g_m[i].tstart = 0;
         g_remove_overlay(sprite);                              /* Lua: sprite:RemoveOverlay() - else the whole minion's head stays on top of the Transform animation */
@@ -610,7 +655,7 @@ static void minion_ai(unsigned long e) {
     if (g_m[i].age < DROP_FRAMES + GRACE_FRAMES) return;      /* 15 frames of grace after the drop */
     unsigned long t = g_m[i].target;
     if (t && (!alive(t) || g_m[i].age % 60 == 0 || (t == owner && g_m[i].age % 15 == 0))) t = 0;
-    if (!t) t = pick_target(e, owner);
+    if (!t) t = pick_target(e, owner, g_m[i].age < g_m[i].skip_until ? g_m[i].skip : 0);
     g_m[i].target = t;
 
     float speed = ffminion_speed(*(const float *) (owner + P_MOVE_SPEED));
@@ -636,6 +681,14 @@ static void minion_ai(unsigned long e) {
         g_m[i].lvy += (dy - g_m[i].lvy) * 0.3f;
     } else { g_m[i].lvx *= 0.8f; g_m[i].lvy *= 0.8f; }
     move_on_grid(fpos(e), g_m[i].lvx, g_m[i].lvy, fly, &g_m[i].lvx, &g_m[i].lvy); g_m[i].carried++;
+    if (g_m[i].age % 30 == 0) {                                /* stuck against rocks: it gave no ground in half a second while chasing an enemy */
+        float mx = fpos(e)[0] - g_m[i].chk_x, my = fpos(e)[1] - g_m[i].chk_y;
+        if (t && t != owner && g_m[i].chk_x != 0.0f && mx * mx + my * my < 64.0f && g_m[i].age >= DROP_FRAMES + GRACE_FRAMES + 30) {
+            g_m[i].skip = t; g_m[i].skip_until = g_m[i].age + 240; g_m[i].target = 0; g_m[i].wvalid = 0;
+            LOG_FEW(6, "ffminion: a minion made no progress toward an enemy (type %d) for half a second: it picks another target for a while", *(const int *) (t + E_TYPE));
+        }
+        g_m[i].chk_x = fpos(e)[0]; g_m[i].chk_y = fpos(e)[1];
+    }
     {   /* minions do not stack on one pixel: each is pushed off any other minion closer than 14 units */
         unsigned long sn[SNAP]; unsigned sc = snapshot(sn);
         for (unsigned k = 0; k < sc; k++) {
@@ -722,6 +775,8 @@ static void probe_familiars(void) {
     }
 }
 
+#include "fffireball.h"
+
 static void w_update(unsigned long e) {
     ff_flush();
     probe_familiars();
@@ -753,6 +808,54 @@ static void real_play(void *s, const char *n, int f) { ((fn_play) (g_base + FN_S
 static void real_remove_overlay(void *s) { ((void (*)(void *)) (g_base + FN_SPRITE_REMOVE_OVERLAY))(s); }
 static void real_overlay(void *s, const char *n, int f) { ((fn_overlay) (g_base + FN_SPRITE_OVERLAY))(s, n, f); }
 
+/* the fireballs' three hooks (fffireball.h): Player::Update (before: the double tap; after: charge, orbit, the shots), Familiar::Update
+ * (after: the orbiter put on its ring) and NPC::TakeDamage (what a Fiend's hits credit). Vtables found by their RTTI: Entity_Player
+ * 0xa8c0b8 (slot 4 = 0x51e828), Entity_Familiar 0xa904b0 (slot 4 = 0x808574), Entity_NPC 0xa8dd60 (slot 9 = 0x69876c). */
+#define PLAYER_VTABLE 0xa8c0b8
+#define FAMILIAR_VTABLE 0xa904b0
+#define NPC_VTABLE 0xa8dd60
+#define FN_PLAYER_UPDATE 0x51e828
+#define FN_FAMILIAR_UPDATE 0x808574
+#define FN_NPC_TAKE 0x69876c
+static fn_update o_player_update, o_familiar_update;
+static fn_take o_npc_take;
+static void w_player_update(unsigned long p) {
+    fb_before_update(p);
+    o_player_update(p);
+    fb_after_update(p);
+}
+static void w_familiar_update(unsigned long f) {
+    o_familiar_update(f);
+    fb_familiar_update(f);
+}
+static int w_npc_take(unsigned long e, float dmg, unsigned long long flags, void *ref, int cd) {
+    float before[HP_N];
+    int have = fb_pre_hit(e, before);
+    int r = o_npc_take(e, dmg, flags, ref, cd);
+    if (have) fb_post_hit(e, dmg, ref, before);
+    return r;
+}
+#define FN_HAS_COLLECTIBLE_FB 0x4eeb74
+#define FN_SPRITE_REPLACE_FB 0x8a0228      /* Sprite::ReplaceSpritesheet(this, int layer, std::string const *)  - marked.c */
+#define FN_SPRITE_GRAPHICS_FB 0x8a0284     /* Sprite::LoadGraphics(this, 0) */
+void *shim_str_assign(void *self, const char *s);
+void shim_str_dtor(void *self);
+static void fb_real_sheet(void *sprite, const char *path) {
+    long long raw[3]; unsigned char *str = (unsigned char *) raw;
+    str[23] = 0;
+    shim_str_assign(str, path);
+    ((void (*)(void *, int, const void *)) (g_base + FN_SPRITE_REPLACE_FB))(sprite, 0, str);
+    shim_str_dtor(str);
+    ((void (*)(void *, int)) (g_base + FN_SPRITE_GRAPHICS_FB))(sprite, 0);
+}
+static int fb_real_trigger(int action, int controller) { return ((int (*)(unsigned long, int, int)) (g_base + FN_TRIGGERED))(0, action, controller) & 1; }
+static void take_slot(const char *name, unsigned long vt, int slot, unsigned long expect, void *mine, void **orig) {
+    unsigned long *at = (unsigned long *) (g_base + vt + 8 * slot);
+    if (*at != (unsigned long) g_base + expect) { LOG("fffireball: %s slot %d holds %lx, not %lx - not hooked", name, slot, *at - (unsigned long) g_base, expect); return; }
+    *orig = (void *) *at; *at = (unsigned long) mine;
+    LOG("fffireball: %s hooked (vtable slot %d)", name, slot);
+}
+
 /* at load, before the image is closed: the Pickup vtable's Update slot is ours (the way rangefix.c takes the knife's) */
 void shim_ffminion_install(unsigned char *base) {
     unsigned long *slot = (unsigned long *) (base + PICKUP_VTABLE + 8 * SLOT_UPDATE);
@@ -767,5 +870,11 @@ void shim_ffminion_install(unsigned char *base) {
     o_update = (fn_update) *slot;
     *slot = (unsigned long) w_update;
     LOG("ffminion: Pickup::Update wrapped (vtable slot 4)");
+    g_trigger = fb_real_trigger; g_frame_fn = fb_real_frame;
+    g_has_item = (int (*)(unsigned long, int, int)) (g_base + FN_HAS_COLLECTIBLE_FB);
+    g_sheet = fb_real_sheet;
+    take_slot("Player::Update", PLAYER_VTABLE, 4, FN_PLAYER_UPDATE, (void *) w_player_update, (void **) &o_player_update);
+    take_slot("Familiar::Update", FAMILIAR_VTABLE, 4, FN_FAMILIAR_UPDATE, (void *) w_familiar_update, (void **) &o_familiar_update);
+    take_slot("NPC::TakeDamage", NPC_VTABLE, 9, FN_NPC_TAKE, (void *) w_npc_take, (void **) &o_npc_take);
 }
 #endif
