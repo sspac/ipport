@@ -68,7 +68,8 @@ enum { SND_LAUNCH = 0, SND_LAND = 1, SND_BURST = 2, SND_FLAMEEND = 3, SND_BOSSEX
 void ffsound_fireball(int what, float vol, float pitch) __attribute__((weak));
 static void fb_sound(int what, float vol, float pitch) { if (ffsound_fireball) ffsound_fireball(what, vol, pitch); }
 
-static int g_fbl[8];
+static int g_fbl[16];
+#define FBLOGN(k, n, ...) do { if (g_fbl[k]++ < (n)) LOG(__VA_ARGS__); } while (0)
 #define FBLOG(k, ...) do { if (g_fbl[k]++ < 4) LOG(__VA_ARGS__); } while (0)
 static int (*g_trigger)(int action, int controller);
 static int (*g_has_item)(unsigned long player, int id, int ignore);       /* Player::HasCollectible (0x4eeb74, ffchars.c) */
@@ -133,8 +134,8 @@ static void tm_run(void) {
 }
 
 /* ---------------------------------------------------------------------------------------------- damage and the enemy's HitPoints */
-#define HP_FROM 0x340
-#define HP_N 48
+#define HP_FROM 0x300      /* a real run never found HitPoints in 0x340..0x400: look in 0x300..0x700 */
+#define HP_N 256
 static int g_hp_off, g_hp_votes[HP_N];
 static float fb_hp(unsigned long e) { return g_hp_off ? *(const float *) (e + g_hp_off) : 1e9f; }
 static int hit_ex(unsigned long e, float damage, unsigned long long flags, int countdown) {
@@ -150,9 +151,11 @@ static void fb_learn_hp(const float *before, unsigned long e, float dmg) {
     int best = -1, bestv = 0, second = 0;
     for (int i = 0; i < HP_N; i++) {
         float d = before[i] - after[i];
-        if (before[i] > 0.0f && before[i] < 1e7f && d > 0.001f && d <= dmg * 1.02f + 0.01f) g_hp_votes[i]++;
+        if (before[i] > 0.0f && before[i] < 1e7f && d > 0.001f && d <= dmg * 2.0f + 0.01f) g_hp_votes[i]++;
         if (g_hp_votes[i] > bestv) { second = bestv; bestv = g_hp_votes[i]; best = i; } else if (g_hp_votes[i] > second) second = g_hp_votes[i];
     }
+    static int tries; tries++;
+    if (tries % 8 == 0 && tries <= 64) LOG("fffireball: HitPoints search, %d hits seen, best entity+%#x with %d votes, runner-up %d", tries, best >= 0 ? HP_FROM + 4 * best : 0, bestv, second);
     if (best >= 0 && bestv >= 3 && bestv > second + 1) { g_hp_off = HP_FROM + 4 * best; LOG("fffireball: HitPoints looks like entity+%#x (%d votes, runner-up %d)", g_hp_off, bestv, second); }
 }
 
@@ -299,11 +302,14 @@ static void fb_crater(float x, float y, float s) {
     unsigned long c = fb_make(T_EFFECT, V_CRATER, 0, x, y, 0, 0, 0);
     if (c) fb_scale(c, s);
 }
-static int fb_blocked(float x, float y) { return g_gw && xy_blocked(x, y, 0); }                    /* the room's grid unknown: nothing blocks */
+/* What stops a fireball: a wall, a rock, a pillar, poop... (grid collision 2 object, 3 solid, 4 wall). NOT a pit (1): it flies over it - blocking on
+ * every non-free tile (what xy_blocked(.., 0) does for a walker) made it burst in mid-air over holes. The room's grid unknown: nothing blocks. */
+static int fb_tile(float x, float y) { return tile_at((int) __builtin_floorf((x - 20.0f) / 40.0f), (int) __builtin_floorf((y - 100.0f) / 40.0f)); }
+static int fb_blocked(float x, float y) { if (!g_gw) return 0; int v = fb_tile(x, y); return v == 255 || v >= 2; }
 static int fb_clear(float x0, float y0, float x1, float y1) { return !g_gw || line_clear(x0, y0, x1, y1, 1); }   /* CheckLine(.., 2) */
 /* What the fireballs may hurt: the room's enemies, found ONCE a game frame (every ember asking the engine about every entity cost frames) and
  * never a friend: anything the player or a familiar made or follows (a real run had fireballs bursting on the Fiend's own helpers). */
-static unsigned long g_tg[SNAP]; static unsigned g_ntg; static int g_tg_wt = -2;
+static unsigned long g_tg[SNAP], g_fire[32]; static unsigned g_ntg, g_nfire; static int g_tg_wt = -2;
 static void fb_targets_dirty(void) { g_tg_wt = -2; }
 static int fb_ally(unsigned long e) {
     static const int links[2] = { FB_SPAWNER, FB_PARENT };
@@ -316,7 +322,8 @@ static int fb_ally(unsigned long e) {
 static unsigned fb_targets(unsigned long **out) {
     if (g_tg_wt != g_wt) {
         unsigned long snap[SNAP]; unsigned n = snapshot(snap); int lvl = target_level(snap, n, 0);
-        g_ntg = 0; g_tg_wt = g_wt;
+        g_ntg = 0; g_nfire = 0; g_tg_wt = g_wt;
+        for (unsigned k = 0; k < n; k++) if (g_nfire < 32 && alive(snap[k]) && *(const int *) (snap[k] + E_TYPE) == 33) g_fire[g_nfire++] = snap[k];      /* fireplaces: a fireball bursts on them */
         for (unsigned k = 0; lvl >= 1 && k < n; k++)
             if (target_ok(snap[k], lvl) && !fb_ally(snap[k])) g_tg[g_ntg++] = snap[k];
     }
@@ -347,6 +354,16 @@ static void ember_tick(void) {
         }
         if (m->size <= 0.0f) { if (m->e) ember_release(m->e); m->e = 0; m->used = 0; }
     }
+}
+
+/* the sprite's Color is tint 0xe8 (rgba), colorize 0xf8 (rgba), offset 0x108 (rgb) from the sprite (ffchars.c's 0x2c-byte Color at sprite+0xe8) */
+static void fb_color_dump(const char *what, unsigned long e) {
+    const float *c = (const float *) (e + E_SPRITE + 0xe8);
+    FBLOGN(9, 8, "fffireball: %s colour tint %.2f %.2f %.2f %.2f colorize %.2f %.2f %.2f %.2f offset %.2f %.2f %.2f", what, c[0], c[1], c[2], c[3], c[4], c[5], c[6], c[7], c[8], c[9], c[10]);
+}
+static void fb_color_plain(unsigned long e, float alpha) {
+    float *c = (float *) (e + E_SPRITE + 0xe8);
+    c[0] = c[1] = c[2] = 1.0f; c[3] = alpha; c[4] = c[5] = c[6] = c[7] = 0.0f; c[8] = c[9] = c[10] = 0.0f;
 }
 
 /* ---------------------------------------------------------------------------------------------- the shot */
@@ -426,15 +443,20 @@ static void shot_tick(shot_t *s) {
     int steps = (int) (sp / 8.0f) + 1; float sx = s->vx / (float) steps, sy = s->vy / (float) steps;
     for (int st = 0; st < steps; st++) {
         float nx = s->x + sx, ny = s->y + sy;
-        if (fb_blocked(nx, ny)) { shot_die(s, 0, player); return; }              /* tear:Die on a wall or a rock */
+        if (fb_blocked(nx, ny)) { FBLOGN(10, 12, "fffireball: shot burst on grid tile value %d at %.0f,%.0f", fb_tile(nx, ny), nx, ny); shot_die(s, 0, player); return; }              /* tear:Die on a wall or a rock */
         s->x = nx; s->y = ny;
+        for (unsigned k = 0; k < g_nfire; k++) {                                       /* a fireplace is an obstacle that is not on the grid */
+            if (!alive(g_fire[k])) continue;
+            float dx = fpos(g_fire[k])[0] - s->x, dy = fpos(g_fire[k])[1] - s->y, r = FB_SHOT_RADIUS + 0.6f * fsize(g_fire[k]);
+            if (dx * dx + dy * dy < r * r) { FBLOGN(11, 6, "fffireball: shot burst on a fireplace"); shot_die(s, 0, player); return; }
+        }
         for (unsigned k = 0; k < n; k++) {
             if (!fb_enemy_ok(snap[k], lvl)) continue;
             float dx = fpos(snap[k])[0] - s->x, dy = fpos(snap[k])[1] - s->y, r = FB_SHOT_RADIUS + fsize(snap[k]);
             if (dx * dx + dy * dy < r * r) { if (s->e) { fpos(s->e)[0] = s->x; fpos(s->e)[1] = s->y; } shot_hit(s, snap[k], player); return; }
         }
     }
-    if (s->e) { fpos(s->e)[0] = s->x; fpos(s->e)[1] = s->y; fvel(s->e)[0] = 0; fvel(s->e)[1] = 0; shot_anim(s); }
+    if (s->e) { fpos(s->e)[0] = s->x; fpos(s->e)[1] = s->y; fvel(s->e)[0] = 0; fvel(s->e)[1] = 0; shot_anim(s); if (s->age == 1 || s->age == 4) fb_color_dump("shot", s->e); fb_color_plain(s->e, 1.0f); }
     if (s->age > 400) shot_die(s, 0, player);                                        /* a shot that never lands is not left flying */
 }
 
@@ -507,7 +529,8 @@ void fb_familiar_update(unsigned long f) {
     fpos(f)[0] = fpos(p)[0] + fvel(p)[0] + FB_ORBIT_R * cosf(a);
     fpos(f)[1] = fpos(p)[1] + fvel(p)[1] + FB_ORBIT_R * sinf(a);
     fvel(f)[0] = 0; fvel(f)[1] = 0;
-    ((float *) (f + E_SPRITE + SPRITE_OFFSET_AT))[1] = -14.0f;
+    /* NOT sprite+0x108: that is the Color's OFFSET rgb (ffchars.c: tint 0, colorize 0x10, offset 0x20 from the Color at sprite+0xe8). Writing the Lua's
+     * SpriteOffset (0,-14) there made green -14 - the red orange of the first real run. The lift is baked into wisp.anm2 (root frame Y -14). */
     g_play((void *) (f + E_SPRITE), "MoveHori", 0);
     for (int k = 0; k < FB_MAXB; k++) if (st->fam[k] == f) {
         if (!st->fis[k] && fb_is_fiend(p) && fb_birthright(p)) {                    /* fiend.lua:778-783: Birthright makes it a fiendish fire, sprite and all */
@@ -515,7 +538,8 @@ void fb_familiar_update(unsigned long f) {
             if (g_sheet) g_sheet((void *) (f + E_SPRITE), FB_SHEET_WISP_FIENDISH);
             FBLOG(3, "fffireball: an orbiter turned fiendish (Birthright)");
         }
-        if (st->fage[k] <= 5) ((float *) (f + E_SPRITE + 0xe8))[3] = (float) st->fage[k] / 5.0f;
+        { static int dumped; if (st->fage[k] == 2 && dumped++ < 4) fb_color_dump("orbiter", f); }
+        fb_color_plain(f, st->fage[k] <= 5 ? (float) st->fage[k] / 5.0f : 1.0f);
         { static int told; if (told++ < 3) LOG("fffireball: orbiter %p at %.0f,%.0f age %d", (void *) f, fpos(f)[0], fpos(f)[1], st->fage[k]); }
     }
 }
@@ -541,7 +565,7 @@ void fb_after_update(unsigned long p) {
     fb_sync_orbiters(st, p);
     if (frame == g_fb_world_frame) return;                                           /* the world below moves once a game frame, not once a player */
     g_fb_world_frame = frame; g_fb_last_frame = frame; g_wt++;
-    { unsigned long rm = g_room(); if (rm != g_fb_room) { g_fb_room = rm; memset(g_sh, 0, sizeof g_sh); memset(g_em, 0, sizeof g_em); memset(g_tm, 0, sizeof g_tm); memset(g_pool, 0, sizeof g_pool); fb_targets_dirty(); } }   /* a new room: what was flying is gone with it */
+    { unsigned long rm = g_room(); if (rm != g_fb_room) { g_fb_room = rm; FBLOGN(12, 12, "fffireball: new room, grid %dx%d, the player (%.0f,%.0f) stands on a tile of value %d", g_gw, g_gh, fpos(p)[0], fpos(p)[1], g_gw ? fb_tile(fpos(p)[0], fpos(p)[1]) : -1); memset(g_sh, 0, sizeof g_sh); memset(g_em, 0, sizeof g_em); memset(g_tm, 0, sizeof g_tm); memset(g_pool, 0, sizeof g_pool); fb_targets_dirty(); } }   /* a new room: what was flying is gone with it */
     for (int i = 0; i < FB_MAXP; i++) if (g_fp[i].p) {
         g_fp[i].ang += FB_ORBIT_STEP;
         for (int k = 0; k < FB_MAXB; k++) if (g_fp[i].fam[k]) g_fp[i].fage[k]++;

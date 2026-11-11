@@ -287,7 +287,7 @@ static void sweep_crits(void) {
         } else {                                              /* it rises one pixel a frame (Lua CritHit) */
             unsigned long e = g_crit[i].e;
             if (*(const int *) (e + E_TYPE) == T_EFFECT && *(const int *) (e + E_VARIANT) == V_CRIT)
-                ((float *) (e + E_SPRITE + SPRITE_OFFSET_AT))[1] -= 1.0f;
+                fpos(e)[1] -= 1.0f;                                   /* the Lua lifts SpriteOffset; +0x108 of the sprite is the COLOUR offset, so the effect itself moves */
             else g_crit[i].e = 0;
         }
     }
@@ -297,7 +297,7 @@ static void show_crit(unsigned long at_minion) {
     float vel[2] = { 0, 0 };
     unsigned long c = g_spawn(*(const unsigned long *) (g_base + GAME_PTR), T_EFFECT, V_CRIT, fpos(at_minion), vel, at_minion, 0, 0, 0);
     if (!c) return;
-    ((float *) (c + E_SPRITE + SPRITE_OFFSET_AT))[1] = -15.0f;       /* Lua: SpriteOffset (0, -15) */
+    fpos(c)[1] -= 15.0f;       /* Lua: SpriteOffset (0, -15) - done by moving the effect: the sprite's +0x108 is the colour offset */
     for (int i = 0; i < 16; i++) if (!g_crit[i].e) { g_crit[i].e = c; g_crit[i].born = now_ms(); return; }
 }
 
@@ -455,8 +455,9 @@ static void grid_update(void) {
     else if (!g_gw && !had && g_grid_logs++ < 12) LOG("ffminion: no room grid found in the room object - minions walk without it");
 }
 static int tile_at(int c, int r) { if (c < 0 || r < 0 || c >= g_gw || r >= g_gh) return 255; return g_cells[c + r * g_gw]; }
+/* the room's grid: tile (c,r) is centred on (40+40c, 120+40r) - the playable area of a 1x1 room starts at (60,140) (GetTopLeftPos) and its centre (320,280) is tile (7,4) */
 static int tile_blocked(int c, int r, int fly) { int v = tile_at(c, r); return v == 255 || (fly ? v >= 4 : v != 0); }   /* a flyer only meets walls; the rest meets pits, objects, rocks too */
-static int xy_blocked(float x, float y, int fly) { return tile_blocked((int) __builtin_floorf(x / 40.0f), (int) __builtin_floorf((y - 80.0f) / 40.0f), fly); }
+static int xy_blocked(float x, float y, int fly) { return tile_blocked((int) __builtin_floorf((x - 20.0f) / 40.0f), (int) __builtin_floorf((y - 100.0f) / 40.0f), fly); }
 static int box_blocked(float x, float y, int fly) {
     const float r = 6.0f;
     return xy_blocked(x - r, y - r, fly) || xy_blocked(x + r, y - r, fly) || xy_blocked(x - r, y + r, fly) || xy_blocked(x + r, y + r, fly);
@@ -471,8 +472,8 @@ static int line_clear(float x0, float y0, float x1, float y1, int fly) {
 static int path_step(float fx, float fy, float tx, float ty, int fly, float *wx, float *wy) {
     if (!g_gw) return 0;
     int W = g_gw, H = g_gh, n = W * H;
-    int sc = (int) __builtin_floorf(fx / 40.0f), sr = (int) __builtin_floorf((fy - 80.0f) / 40.0f);
-    int tc = (int) __builtin_floorf(tx / 40.0f), tr = (int) __builtin_floorf((ty - 80.0f) / 40.0f);
+    int sc = (int) __builtin_floorf((fx - 20.0f) / 40.0f), sr = (int) __builtin_floorf((fy - 100.0f) / 40.0f);
+    int tc = (int) __builtin_floorf((tx - 20.0f) / 40.0f), tr = (int) __builtin_floorf((ty - 100.0f) / 40.0f);
     if (sc < 0 || sr < 0 || sc >= W || sr >= H || tc < 0 || tr < 0 || tc >= W || tr >= H) return 0;
     short dist[448], q[448]; int qh = 0, qt = 0;
     for (int i = 0; i < n; i++) dist[i] = -1;
@@ -504,7 +505,7 @@ static int path_step(float fx, float fy, float tx, float ty, int fly, float *wx,
         }
         if (best < 0) break;
         cc += dc[best]; cr += dr[best]; here = dist[cc + cr * W];
-        float cx = 20.0f + 40.0f * cc, cy = 100.0f + 40.0f * cr;
+        float cx = 40.0f + 40.0f * cc, cy = 120.0f + 40.0f * cr;
         if (first || line_clear(fx, fy, cx, cy, fly)) { bx = cx; by = cy; have = 1; first = 0; } else break;
     }
     if (!have) return 0;
