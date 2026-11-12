@@ -349,7 +349,7 @@ static int safe_copy(void *dst, const void *src, unsigned long n) {
     return w == (long) n && got == n;
 }
 
-static unsigned char g_cells[448];
+static unsigned char g_cells[448]; static unsigned g_raw[448]; static int g_grid_dump_in, g_grid_dumps;
 static int g_gw, g_gh, g_wallv;
 static unsigned long g_grid_at; static int g_grid_stride, g_grid_logs;
 static long long g_grid_checked, g_grid_searched;
@@ -408,6 +408,7 @@ static int grid_direct(unsigned long room) {
     if (!safe_copy(raw, (const void *) (room + ROOM_COLL), n)) return 0;
     unsigned char cells[448];
     int border = 0, walls = 0;
+    memcpy(g_raw, raw, (size_t) wh[0] * wh[1] * 4);
     for (int i = 0; i < wh[0] * wh[1]; i++) {
         cells[i] = raw[i] > 250 ? 250 : (unsigned char) raw[i];
         int c = i % wh[0], r = i / wh[0];
@@ -453,6 +454,18 @@ static void grid_update(void) {
     grid_search(room);
     if (g_gw && g_grid_logs++ < 12) LOG("ffminion: the room grid is at room%+ld (%s), %d x %d tiles, wall value %d, %d tiles not free", (long) (g_grid_at - room), g_grid_stride == 4 ? "ints" : "bytes", g_gw, g_gh, g_wallv, ({ int k = 0; for (int i = 0; i < g_gw * g_gh; i++) k += g_cells[i] != 0; k; }));
     else if (!g_gw && !had && g_grid_logs++ < 12) LOG("ffminion: no room grid found in the room object - minions walk without it");
+}
+static unsigned grid_raw_at(float x, float y) { int c = (int) __builtin_floorf((x - 20.0f) / 40.0f), r = (int) __builtin_floorf((y - 100.0f) / 40.0f); return (c < 0 || r < 0 || c >= g_gw || r >= g_gh) ? 0xffffu : g_raw[c + r * g_gw]; }
+/* once per room, a while after it was entered: the whole table, raw (what the clamped copy hides) */
+static void grid_dump_tick(void) {
+    if (g_grid_dump_in <= 0 || !g_gw || --g_grid_dump_in) return;
+    if (g_grid_dumps++ >= 8) return;
+    LOG("ffminion: grid dump %d: %d x %d", g_grid_dumps, g_gw, g_gh);
+    for (int r = 0; r < g_gh; r++) {
+        char line[512]; int n = 0;
+        for (int c = 0; c < g_gw && n < 480; c++) n += snprintf(line + n, sizeof line - n, "%x ", g_raw[c + r * g_gw]);
+        LOG("ffminion:   row %d: %s", r, line);
+    }
 }
 static int tile_at(int c, int r) { if (c < 0 || r < 0 || c >= g_gw || r >= g_gh) return 255; return g_cells[c + r * g_gw]; }
 /* the room's grid: tile (c,r) is centred on (40+40c, 120+40r) - the playable area of a 1x1 room starts at (60,140) (GetTopLeftPos) and its centre (320,280) is tile (7,4) */
@@ -809,6 +822,7 @@ static void fb_player_frame(unsigned long p, void (*orig)(unsigned long)) {
     fb_before_update(p);
     orig(p);
     fb_after_update(p);
+    grid_dump_tick();
     if (ffheart_poll) ffheart_poll();
 }
 #ifndef FF_HOST_TEST

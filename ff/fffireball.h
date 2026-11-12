@@ -136,7 +136,10 @@ static void tm_run(void) {
 /* ---------------------------------------------------------------------------------------------- damage and the enemy's HitPoints */
 #define HP_FROM 0x300      /* a real run never found HitPoints in 0x340..0x400: look in 0x300..0x700 */
 #define HP_N 256
-static int g_hp_off, g_hp_votes[HP_N];
+/* Entity::HitPoints is entity+0x354 and MaxHitPoints +0x358 (NPC::TakeDamage 0x69876c: 0x69aa54 ldr s0,[x20,#0x358] ... fcsel ... str s0,[x20,#0x354] clamps the HP to the max).
+ * The run-time search for it (kept as a fallback if this is ever zeroed) found nothing in 64 real hits. */
+#define FB_HP_OFF 0x354
+static int g_hp_off = FB_HP_OFF, g_hp_votes[HP_N];
 static float fb_hp(unsigned long e) { return g_hp_off ? *(const float *) (e + g_hp_off) : 1e9f; }
 static int hit_ex(unsigned long e, float damage, unsigned long long flags, int countdown) {
     static unsigned char ref[0x100];                                   /* an EntityRef with no source: the fireball's own hits are not credited twice */
@@ -226,6 +229,7 @@ static unsigned long fb_owner_of(unsigned long src) {
 static void fb_post_hit(unsigned long e, float dmg, void *ref, const float *before) {
     if (!g_fb_any) return;
     fb_learn_hp(before, e, dmg);                                                      /* any hit teaches the HitPoints offset, not only a Fiend's */
+    { static int n; if (n++ < 16) LOG("fffireball: hit %p dmg %.2f: HP %.2f -> %.2f", (void *) e, dmg, before[(FB_HP_OFF - HP_FROM) / 4], *(const float *) (e + FB_HP_OFF)); }
     if (!ref || !g_readable(ref, 0x30)) return;
     unsigned long player = fb_owner_of(*(const unsigned long *) ((unsigned char *) ref + FB_REF_SOURCE));
     if (!fb_is_fiend(player)) return;
@@ -305,7 +309,11 @@ static void fb_crater(float x, float y, float s) {
 /* What stops a fireball: a wall, a rock, a pillar, poop... (grid collision 2 object, 3 solid, 4 wall). NOT a pit (1): it flies over it - blocking on
  * every non-free tile (what xy_blocked(.., 0) does for a walker) made it burst in mid-air over holes. The room's grid unknown: nothing blocks. */
 static int fb_tile(float x, float y) { return tile_at((int) __builtin_floorf((x - 20.0f) / 40.0f), (int) __builtin_floorf((y - 100.0f) / 40.0f)); }
-static int fb_blocked(float x, float y) { if (!g_gw) return 0; int v = fb_tile(x, y); return v == 255 || v >= 2; }
+static int fb_blocked(float x, float y) {
+    if (!g_gw) return 0;
+    if (x < 60.0f || y < 140.0f || x > 20.0f + 40.0f * (float) (g_gw - 1) || y > 100.0f + 40.0f * (float) (g_gh - 1)) return 1;   /* outside the playable area: the wall */
+    int v = fb_tile(x, y); return v >= 2 && v <= 5;                              /* a real run showed value 250 (> 250 raw) under the player's own feet: not an obstacle */
+}
 static int fb_clear(float x0, float y0, float x1, float y1) { return !g_gw || line_clear(x0, y0, x1, y1, 1); }   /* CheckLine(.., 2) */
 /* What the fireballs may hurt: the room's enemies, found ONCE a game frame (every ember asking the engine about every entity cost frames) and
  * never a friend: anything the player or a familiar made or follows (a real run had fireballs bursting on the Fiend's own helpers). */
@@ -443,7 +451,7 @@ static void shot_tick(shot_t *s) {
     int steps = (int) (sp / 8.0f) + 1; float sx = s->vx / (float) steps, sy = s->vy / (float) steps;
     for (int st = 0; st < steps; st++) {
         float nx = s->x + sx, ny = s->y + sy;
-        if (fb_blocked(nx, ny)) { FBLOGN(10, 12, "fffireball: shot burst on grid tile value %d at %.0f,%.0f", fb_tile(nx, ny), nx, ny); shot_die(s, 0, player); return; }              /* tear:Die on a wall or a rock */
+        if (fb_blocked(nx, ny)) { FBLOGN(10, 12, "fffireball: shot burst on grid tile value %d (raw %#x) at %.0f,%.0f", fb_tile(nx, ny), grid_raw_at(nx, ny), nx, ny); shot_die(s, 0, player); return; }              /* tear:Die on a wall or a rock */
         s->x = nx; s->y = ny;
         for (unsigned k = 0; k < g_nfire; k++) {                                       /* a fireplace is an obstacle that is not on the grid */
             if (!alive(g_fire[k])) continue;
@@ -565,7 +573,7 @@ void fb_after_update(unsigned long p) {
     fb_sync_orbiters(st, p);
     if (frame == g_fb_world_frame) return;                                           /* the world below moves once a game frame, not once a player */
     g_fb_world_frame = frame; g_fb_last_frame = frame; g_wt++;
-    { unsigned long rm = g_room(); if (rm != g_fb_room) { g_fb_room = rm; FBLOGN(12, 12, "fffireball: new room, grid %dx%d, the player (%.0f,%.0f) stands on a tile of value %d", g_gw, g_gh, fpos(p)[0], fpos(p)[1], g_gw ? fb_tile(fpos(p)[0], fpos(p)[1]) : -1); memset(g_sh, 0, sizeof g_sh); memset(g_em, 0, sizeof g_em); memset(g_tm, 0, sizeof g_tm); memset(g_pool, 0, sizeof g_pool); fb_targets_dirty(); } }   /* a new room: what was flying is gone with it */
+    { unsigned long rm = g_room(); if (rm != g_fb_room) { g_fb_room = rm; g_grid_dump_in = 20; FBLOGN(12, 12, "fffireball: new room, grid %dx%d, the player (%.0f,%.0f) stands on a tile of value %d", g_gw, g_gh, fpos(p)[0], fpos(p)[1], g_gw ? fb_tile(fpos(p)[0], fpos(p)[1]) : -1); memset(g_sh, 0, sizeof g_sh); memset(g_em, 0, sizeof g_em); memset(g_tm, 0, sizeof g_tm); memset(g_pool, 0, sizeof g_pool); fb_targets_dirty(); } }   /* a new room: what was flying is gone with it */
     for (int i = 0; i < FB_MAXP; i++) if (g_fp[i].p) {
         g_fp[i].ang += FB_ORBIT_STEP;
         for (int k = 0; k < FB_MAXB; k++) if (g_fp[i].fam[k]) g_fp[i].fage[k]++;
