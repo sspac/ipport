@@ -120,6 +120,12 @@ typedef int (*fn_take)(unsigned long, float, unsigned long long, void *, int);
 typedef unsigned char (*fn_pred)(unsigned long);       /* a C++ bool comes back in the low byte only */
 
 static unsigned char *g_base;
+/* Room::GetGridIndex(Vector const &) 0x5a18ac and Room::GetGridCollision(idx) 0x59aca0 (the GridEntity's class at +0x40, else decoded from the table at room+0xe98).
+ * A run showed that table is the PATHFINDER's (0 free, 0x3e8 blocked for walkers: rocks, pits, walls all alike), not collision classes. */
+#define FN_GRID_INDEX 0x5a18ac
+#define FN_GRID_COLLISION 0x59aca0
+static int (*g_grid_index)(unsigned long room, const float *pos);
+static int (*g_grid_class)(unsigned long room, int idx);
 static fn_update o_update;
 static fn_spawn g_spawn;                    /* the host test puts its own here */
 static fn_play g_play;
@@ -887,6 +893,8 @@ void shim_ffminion_install(unsigned char *base) {
         return;
     }
     g_base = base;
+    g_grid_index = (int (*)(unsigned long, const float *)) (base + FN_GRID_INDEX);
+    g_grid_class = (int (*)(unsigned long, int)) (base + FN_GRID_COLLISION);
     g_spawn = real_spawn; g_play = real_play; g_overlay = real_overlay; g_remove_overlay = real_remove_overlay; g_list_now = shim_eid_list_now; g_readable = shim_eid_readable;
     g_seed ^= (unsigned) now_ms();
     o_update = (fn_update) *slot;

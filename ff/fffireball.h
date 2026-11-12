@@ -184,20 +184,67 @@ static void fb_credit(unsigned long player, float amount, int survived) {
 }
 
 /* a half immoral heart half the time for what a fireball kills; it stays 60 frames (heart.Timeout = 60) */
-static void fb_heart(unsigned long e) {
-    if (rnd(2) >= 1) return;
+/* A kill by fire (fiend.lua:827 flags what the fireball or its embers hit; main.lua:18700-18720 checks the flagged NPC on its next update):
+ * HasMortalDamage and not NO_REWARD, and it must have been there when the room started (SpawnedAtRoomStart): then 50% a half immoral
+ * heart that times out after 60 frames. A real run showed the damage may not be applied inside TakeDamage (HitPoints read the same right
+ * after the call), so the flagged NPCs are watched from frame to frame: HitPoints <= 0, dead, or gone from the room with damage >= its HitPoints. */
+#define KW_N 32
+typedef struct { unsigned long e; int type, variant, age, immediate, start; float x, y, hp, dmg; } kw_t;
+static kw_t g_kw[KW_N];
+static unsigned long g_start[SNAP]; static unsigned g_nstart; static int g_start_wait;
+static int fb_was_at_start(unsigned long e) { for (unsigned i = 0; i < g_nstart; i++) if (g_start[i] == e) return 1; return 0; }
+static void fb_heart_at(float x, float y) {
+    if (rnd(2) >= 1) { FBLOGN(14, 12, "fffireball: a kill by fire, the 50%% roll was lost"); return; }
     float a = fb_rf(0, 6.2831853f), sp = fb_rf(0.1f, 2.0f);
-    unsigned long h = fb_make(T_PICKUP, V_HALF_IMMORAL, 0, fpos(e)[0], fpos(e)[1], cosf(a) * sp, sinf(a) * sp, first_player());
-    if (h) { tm_add(h, T_PICKUP, V_HALF_IMMORAL, 60, 0); FBLOG(3, "fffireball: a half immoral heart for a kill by fire"); }
+    unsigned long h = fb_make(T_PICKUP, V_HALF_IMMORAL, 0, x, y, cosf(a) * sp, sinf(a) * sp, first_player());
+    if (h) { tm_add(h, T_PICKUP, V_HALF_IMMORAL, 60, 0); FBLOGN(3, 4, "fffireball: a half immoral heart for a kill by fire"); }
+    else FBLOGN(15, 4, "fffireball: a half immoral heart was due but the spawn gave nothing");
 }
-/* one hit by what the fireball made: damages it; nothing the fireball makes credits the charge (a real run showed it snowballing) */
-static void fb_deal(unsigned long e, float dmg, unsigned long long flags, int cd, unsigned long player, int credit) {
+static void fb_mark(unsigned long e, float dmg, float hp0, float hp1, unsigned long player) {
+    if (!fb_is_fiend(player)) return;
+    kw_t *k = 0;
+    for (int i = 0; i < KW_N; i++) if (g_kw[i].e == e) { k = &g_kw[i]; break; }
+    if (!k) for (int i = 0; i < KW_N; i++) if (!g_kw[i].e) { k = &g_kw[i]; break; }
+    if (!k) return;
+    if (k->e != e) {
+        memset(k, 0, sizeof *k); k->e = e; k->type = *(const int *) (e + E_TYPE); k->variant = *(const int *) (e + E_VARIANT);
+        k->hp = hp0; k->start = fb_was_at_start(e);
+    }
+    if (hp1 < hp0 - 0.01f) { k->immediate = 1; k->hp = hp1; }
+    k->dmg += dmg; k->age = 0; k->x = fpos(e)[0]; k->y = fpos(e)[1];
+}
+static void fb_kill_watch(void) {
+    if (g_start_wait > 0 && --g_start_wait == 0) g_nstart = snapshot(g_start);       /* the room's own monsters */
+    int any = 0; for (int i = 0; i < KW_N; i++) if (g_kw[i].e) { any = 1; break; }
+    if (!any) return;
+    unsigned long snap[SNAP]; unsigned n = snapshot(snap);
+    for (int i = 0; i < KW_N; i++) {
+        kw_t *k = &g_kw[i]; if (!k->e) continue;
+        int found = 0; for (unsigned j = 0; j < n; j++) if (snap[j] == k->e && *(const int *) (k->e + E_TYPE) == k->type) { found = 1; break; }
+        int dead;
+        if (found) {
+            float hp = fb_hp(k->e);
+            k->x = fpos(k->e)[0]; k->y = fpos(k->e)[1];
+            if (k->immediate || hp < k->hp - 0.01f) { k->immediate = 1; k->hp = hp; }
+            dead = !alive(k->e) || (g_hp_off && hp <= 0.0f);
+            if (!dead && ++k->age > 90) { k->e = 0; continue; }                      /* it survived */
+        } else dead = k->immediate ? k->hp <= 0.0f : k->dmg >= k->hp;
+        if (!dead) continue;
+        FBLOGN(13, 16, "fffireball: %d.%d died by fire (HitPoints %.2f, damage %.2f, %s, room's own %d)", k->type, k->variant, k->hp, k->dmg, found ? "seen" : "gone", k->start);
+        if (k->start) fb_heart_at(k->x, k->y);
+        k->e = 0;
+    }
+}
+/* one hit by what the fireball made: damages it; nothing the fireball makes credits the charge (a real run showed it snowballing). mark: the
+ * shot's own hit and its embers flag the NPC for the heart (fiend.lua:453 / 597) */
+static void fb_deal2(unsigned long e, float dmg, unsigned long long flags, int cd, unsigned long player, int credit, int mark) {
     float hp0 = fb_hp(e);
     hit_ex(e, dmg, flags, cd);
     float hp1 = fb_hp(e);
     if (credit) fb_credit(player, hp1 < dmg ? hp1 : dmg, hp1 > 0.0f);
-    if (g_hp_off && hp0 > 0.0f && hp1 <= 0.0f && fb_is_fiend(player)) fb_heart(e);
+    if (mark) fb_mark(e, dmg, hp0, hp1, player);
 }
+static void fb_deal(unsigned long e, float dmg, unsigned long long flags, int cd, unsigned long player, int credit) { fb_deal2(e, dmg, flags, cd, player, credit, 0); }
 
 /* the game's own hits: the NPC TakeDamage hook (ffminion.c) calls these */
 static int fb_pre_hit(unsigned long e, float *before) {
@@ -229,7 +276,7 @@ static unsigned long fb_owner_of(unsigned long src) {
 static void fb_post_hit(unsigned long e, float dmg, void *ref, const float *before) {
     if (!g_fb_any) return;
     fb_learn_hp(before, e, dmg);                                                      /* any hit teaches the HitPoints offset, not only a Fiend's */
-    { static int n; if (n++ < 16) LOG("fffireball: hit %p dmg %.2f: HP %.2f -> %.2f", (void *) e, dmg, before[(FB_HP_OFF - HP_FROM) / 4], *(const float *) (e + FB_HP_OFF)); }
+    { int t = *(const int *) (e + E_TYPE); static int n; if (t != 33 && t != 245 && n++ < 24) LOG("fffireball: hit on %d.%d dmg %.2f: HitPoints %.2f -> %.2f right after the call", t, *(const int *) (e + E_VARIANT), dmg, before[(FB_HP_OFF - HP_FROM) / 4], *(const float *) (e + FB_HP_OFF)); }
     if (!ref || !g_readable(ref, 0x30)) return;
     unsigned long player = fb_owner_of(*(const unsigned long *) ((unsigned char *) ref + FB_REF_SOURCE));
     if (!fb_is_fiend(player)) return;
@@ -308,11 +355,18 @@ static void fb_crater(float x, float y, float s) {
 }
 /* What stops a fireball: a wall, a rock, a pillar, poop... (grid collision 2 object, 3 solid, 4 wall). NOT a pit (1): it flies over it - blocking on
  * every non-free tile (what xy_blocked(.., 0) does for a walker) made it burst in mid-air over holes. The room's grid unknown: nothing blocks. */
-static int fb_tile(float x, float y) { return tile_at((int) __builtin_floorf((x - 20.0f) / 40.0f), (int) __builtin_floorf((y - 100.0f) / 40.0f)); }
+/* The class of the tile under a point, as the engine itself says it (GridCollisionClass: 0 none, 1 pit, 2 object, 3 solid, 4 wall, 5 wall except player).
+ * The grid table found at room+0xe98 is the pathfinder's and cannot tell a rock from a hole. No engine (the host tests): the table, 0/1000 -> 0/3. */
+static int fb_tile(float x, float y) {
+    if (g_grid_index && g_grid_class && g_room) {
+        unsigned long rm = g_room();
+        if (rm) { float p[2] = { x, y }; int idx = g_grid_index(rm, p); return idx < 0 ? 4 : g_grid_class(rm, idx); }
+    }
+    return tile_at((int) __builtin_floorf((x - 20.0f) / 40.0f), (int) __builtin_floorf((y - 100.0f) / 40.0f));
+}
 static int fb_blocked(float x, float y) {
-    if (!g_gw) return 0;
-    if (x < 60.0f || y < 140.0f || x > 20.0f + 40.0f * (float) (g_gw - 1) || y > 100.0f + 40.0f * (float) (g_gh - 1)) return 1;   /* outside the playable area: the wall */
-    int v = fb_tile(x, y); return v >= 2 && v <= 5;                              /* a real run showed value 250 (> 250 raw) under the player's own feet: not an obstacle */
+    if (!g_gw && !g_grid_class) return 0;                                        /* no grid known: nothing blocks */
+    int v = fb_tile(x, y); return v >= 2 && v <= 5;
 }
 static int fb_clear(float x0, float y0, float x1, float y1) { return !g_gw || line_clear(x0, y0, x1, y1, 1); }   /* CheckLine(.., 2) */
 /* What the fireballs may hurt: the room's enemies, found ONCE a game frame (every ember asking the engine about every entity cost frames) and
@@ -349,7 +403,7 @@ static void ember_tick(void) {
             if (!fb_enemy_ok(snap[k], lvl)) continue;
             float dx = fpos(snap[k])[0] - m->x, dy = fpos(snap[k])[1] - m->y;
             float r = m->size + fsize(snap[k]);
-            if (dx * dx + dy * dy <= r * r) fb_deal(snap[k], m->dmg, DMG_FIRE, 4, m->owner, 0);
+            if (dx * dx + dy * dy <= r * r) fb_deal2(snap[k], m->dmg, DMG_FIRE, 4, m->owner, 0, 1);
         }
         m->x += m->vx; m->y += m->vy;
         m->size -= 1.0f; m->age++;
@@ -402,7 +456,7 @@ static void shot_die(shot_t *s, int hit_enemy_e, unsigned long player) {
     s->e = 0; s->used = 0;
 }
 static void shot_hit(shot_t *s, unsigned long hit, unsigned long player) {
-    fb_deal(hit, s->dmg, 0, 0, player, 0);                                           /* the tear's own collision damage */
+    fb_deal2(hit, s->dmg, 0, 0, player, 0, 1);                                           /* the tear's own collision damage */
     /* fiendTearCollision: 2 to each enemy within 75*0.5 + size, with its crater, sound and embers - each time */
     unsigned long *snap; unsigned n = fb_targets(&snap); int lvl = 2;
     for (unsigned k = 0; k < n; k++) {
@@ -442,7 +496,7 @@ static void shot_tick(shot_t *s) {
         for (unsigned k = 0; k < n; k++) {                                           /* its Size-1 fire hurts once: 1.4, fire, countdown 4 */
             if (!fb_enemy_ok(snap[k], lvl)) continue;
             float dx = fpos(snap[k])[0] - s->x, dy = fpos(snap[k])[1] - s->y, r = 1.0f + fsize(snap[k]);
-            if (dx * dx + dy * dy <= r * r) fb_deal(snap[k], 1.4f, DMG_FIRE, 4, player, 0);
+            if (dx * dx + dy * dy <= r * r) fb_deal2(snap[k], 1.4f, DMG_FIRE, 4, player, 0, 1);
         }
         ember_make(s->x, s->y, 0, 0, 7.0f, 0.0f, player, 0, 1, s->fiendish);                      /* the Lua's Fire Jet plume, drawn with a short ember */
     }
@@ -451,7 +505,7 @@ static void shot_tick(shot_t *s) {
     int steps = (int) (sp / 8.0f) + 1; float sx = s->vx / (float) steps, sy = s->vy / (float) steps;
     for (int st = 0; st < steps; st++) {
         float nx = s->x + sx, ny = s->y + sy;
-        if (fb_blocked(nx, ny)) { FBLOGN(10, 12, "fffireball: shot burst on grid tile value %d (raw %#x) at %.0f,%.0f", fb_tile(nx, ny), grid_raw_at(nx, ny), nx, ny); shot_die(s, 0, player); return; }              /* tear:Die on a wall or a rock */
+        if (fb_blocked(nx, ny)) { FBLOGN(10, 12, "fffireball: shot burst on grid collision class %d (pathfinder cell %#x) at %.0f,%.0f", fb_tile(nx, ny), grid_raw_at(nx, ny), nx, ny); shot_die(s, 0, player); return; }              /* tear:Die on a wall or a rock */
         s->x = nx; s->y = ny;
         for (unsigned k = 0; k < g_nfire; k++) {                                       /* a fireplace is an obstacle that is not on the grid */
             if (!alive(g_fire[k])) continue;
@@ -573,13 +627,14 @@ void fb_after_update(unsigned long p) {
     fb_sync_orbiters(st, p);
     if (frame == g_fb_world_frame) return;                                           /* the world below moves once a game frame, not once a player */
     g_fb_world_frame = frame; g_fb_last_frame = frame; g_wt++;
-    { unsigned long rm = g_room(); if (rm != g_fb_room) { g_fb_room = rm; g_grid_dump_in = 20; FBLOGN(12, 12, "fffireball: new room, grid %dx%d, the player (%.0f,%.0f) stands on a tile of value %d", g_gw, g_gh, fpos(p)[0], fpos(p)[1], g_gw ? fb_tile(fpos(p)[0], fpos(p)[1]) : -1); memset(g_sh, 0, sizeof g_sh); memset(g_em, 0, sizeof g_em); memset(g_tm, 0, sizeof g_tm); memset(g_pool, 0, sizeof g_pool); fb_targets_dirty(); } }   /* a new room: what was flying is gone with it */
+    { unsigned long rm = g_room(); if (rm != g_fb_room) { g_fb_room = rm; g_grid_dump_in = 20; g_start_wait = 4; g_nstart = 0; memset(g_kw, 0, sizeof g_kw); FBLOGN(12, 12, "fffireball: new room, grid %dx%d, the player (%.0f,%.0f) stands on a tile of value %d", g_gw, g_gh, fpos(p)[0], fpos(p)[1], g_gw ? fb_tile(fpos(p)[0], fpos(p)[1]) : -1); memset(g_sh, 0, sizeof g_sh); memset(g_em, 0, sizeof g_em); memset(g_tm, 0, sizeof g_tm); memset(g_pool, 0, sizeof g_pool); fb_targets_dirty(); } }   /* a new room: what was flying is gone with it */
     for (int i = 0; i < FB_MAXP; i++) if (g_fp[i].p) {
         g_fp[i].ang += FB_ORBIT_STEP;
         for (int k = 0; k < FB_MAXB; k++) if (g_fp[i].fam[k]) g_fp[i].fage[k]++;
     }
     for (int i = 0; i < 8; i++) if (g_sh[i].used) shot_tick(&g_sh[i]);
     ember_tick();
+    fb_kill_watch();
     tm_run();
 }
 #endif
