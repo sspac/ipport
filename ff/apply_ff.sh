@@ -44,6 +44,9 @@ edit(C + 'loader.c',
 print("fiend folio modules applied")
 PY
 python3 "$HERE/ffwatch_patch.py" "$CPP/pack.c"
+# the console: Fiend Folio's monsters in the ENEMIES tab (ffenemies_table.h is written by tools/spawner_ff_enemies.py)
+cp "$HERE/ffenemies_table.h" "$CPP/ffenemies_table.h"
+python3 "$HERE/ffconsole_patch.py" "$CPP"
 # Mali crash (libGLES_mali.so, from libisaacport.so shim_gpu_passes_open+0x468): the per-pass timestamp queries of the report build
 # (gpu.c ts_harvest -> glGetQueryObjectivEXT on a glQueryCounterEXT query) fault inside the driver. Measured from the crash address
 # in the user's libisaacport.so. The timestamps are diagnostics only; the passes are still counted.
