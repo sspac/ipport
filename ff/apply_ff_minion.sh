@@ -7,6 +7,8 @@ CPP=port/app/src/main/cpp
 cp "$HERE/ffheart.c" "$CPP/ffheart.c"        # the hit hook and the minion collision block live here
 cp "$HERE/ffminion.c" "$CPP/ffminion.c"
 [ -f "$HERE/fffireball.h" ] && cp "$HERE/fffireball.h" "$CPP/fffireball.h"
+[ -f "$HERE/ffenemy.h" ] && cp "$HERE/ffenemy.h" "$CPP/ffenemy.h"
+[ -f "$HERE/ffanim_table.h" ] && cp "$HERE/ffanim_table.h" "$CPP/ffanim_table.h"
 cp "$HERE/ffsay.h" "$CPP/ffsay.h"
 cp "$HERE/ffchars.c" "$CPP/ffchars.c"
 python3 - <<'PY'

@@ -191,6 +191,12 @@ static void fb_credit(unsigned long player, float amount, int survived) {
 #define KW_N 32
 typedef struct { unsigned long e; int type, variant, age, immediate, start; float x, y, hp, dmg; } kw_t;
 static kw_t g_kw[KW_N];
+/* The Room object can be reused from room to room, so the pointer alone misses changes: fold in the game's index of the room being played (Game+0x21558). */
+static unsigned long fb_room_sig(void) {
+    unsigned long rm = g_room ? g_room() : 0;
+    if (g_base) { unsigned long game = *(const unsigned long *) (g_base + GAME_PTR); if (game) rm ^= (unsigned long) (unsigned) *(const int *) (game + 0x21558) << 48 ^ (unsigned long) (*(const int *) (game + 0x0) + 1) << 40; }
+    return rm;
+}
 static unsigned long g_start[SNAP]; static unsigned g_nstart; static int g_start_wait;
 static int fb_was_at_start(unsigned long e) { for (unsigned i = 0; i < g_nstart; i++) if (g_start[i] == e) return 1; return 0; }
 static void fb_heart_at(float x, float y) {
@@ -627,7 +633,7 @@ void fb_after_update(unsigned long p) {
     fb_sync_orbiters(st, p);
     if (frame == g_fb_world_frame) return;                                           /* the world below moves once a game frame, not once a player */
     g_fb_world_frame = frame; g_fb_last_frame = frame; g_wt++;
-    { unsigned long rm = g_room(); if (rm != g_fb_room) { g_fb_room = rm; g_grid_dump_in = 20; g_start_wait = 4; g_nstart = 0; memset(g_kw, 0, sizeof g_kw); FBLOGN(12, 12, "fffireball: new room, grid %dx%d, the player (%.0f,%.0f) stands on a tile of value %d", g_gw, g_gh, fpos(p)[0], fpos(p)[1], g_gw ? fb_tile(fpos(p)[0], fpos(p)[1]) : -1); memset(g_sh, 0, sizeof g_sh); memset(g_em, 0, sizeof g_em); memset(g_tm, 0, sizeof g_tm); memset(g_pool, 0, sizeof g_pool); fb_targets_dirty(); } }   /* a new room: what was flying is gone with it */
+    { unsigned long rm = fb_room_sig(); if (rm != g_fb_room) { g_fb_room = rm; g_grid_dump_in = 20; g_start_wait = 4; g_nstart = 0; memset(g_kw, 0, sizeof g_kw); FBLOGN(12, 12, "fffireball: new room, grid %dx%d, the player (%.0f,%.0f) stands on a tile of value %d", g_gw, g_gh, fpos(p)[0], fpos(p)[1], g_gw ? fb_tile(fpos(p)[0], fpos(p)[1]) : -1); memset(g_sh, 0, sizeof g_sh); memset(g_em, 0, sizeof g_em); memset(g_tm, 0, sizeof g_tm); memset(g_pool, 0, sizeof g_pool); fb_targets_dirty(); } }   /* a new room: what was flying is gone with it */
     for (int i = 0; i < FB_MAXP; i++) if (g_fp[i].p) {
         g_fp[i].ang += FB_ORBIT_STEP;
         for (int k = 0; k < FB_MAXB; k++) if (g_fp[i].fam[k]) g_fp[i].fage[k]++;

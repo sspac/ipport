@@ -1,7 +1,7 @@
 /* Written by tools/spawner_ff_enemies.py - do not edit by hand. Included twice by spawner_enemies.h (ffconsole_patch.py):
  * once for the count, once inside the SP_ENEMY initializer (group SP_GROUP_FF = FIEND FOLIO). */
 #ifndef FF_ENEMY_ROWS
-#define FF_ENEMY_ROWS 31
+#define FF_ENEMY_ROWS 30
 #endif
 #ifdef FF_ENEMY_BODY
     { 151, 0, 0, SP_GROUP_FF, 10000, 26, 26, -1, -1, 0, { "Slammer", "Slammer", "Slammer", "Slammer", "Slammer", "Slammer", "Slammer" } },   /* basement */
@@ -33,6 +33,5 @@
     { 666, 100, 0, SP_GROUP_FF, 10026, 27, 28, -1, -1, 0, { "Drink Worm", "Drink Worm", "Drink Worm", "Drink Worm", "Drink Worm", "Drink Worm", "Drink Worm" } },   /* basement */
     { 114, 0, 0, SP_GROUP_FF, 10027, 25, 24, -1, -1, 0, { "Benign", "Benign", "Benign", "Benign", "Benign", "Benign", "Benign" } },   /* basement */
     { 15, 450, 0, SP_GROUP_FF, 10028, 21, 14, -1, -1, 0, { "Drumstick", "Drumstick", "Drumstick", "Drumstick", "Drumstick", "Drumstick", "Drumstick" } },   /* basement */
-    { 160, 490, 0, SP_GROUP_FF, 10029, 14, 31, -1, -1, 0, { "Tap", "Tap", "Tap", "Tap", "Tap", "Tap", "Tap" } },   /* basement */
-    { 451, 350, 0, SP_GROUP_FF, 10030, 44, 36, -1, -1, 0, { "Cheeky", "Cheeky", "Cheeky", "Cheeky", "Cheeky", "Cheeky", "Cheeky" } },   /* basement */
+    { 451, 350, 0, SP_GROUP_FF, 10029, 44, 36, -1, -1, 0, { "Cheeky", "Cheeky", "Cheeky", "Cheeky", "Cheeky", "Cheeky", "Cheeky" } },   /* basement */
 #endif

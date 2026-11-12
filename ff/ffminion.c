@@ -798,6 +798,7 @@ static void probe_familiars(void) {
 }
 
 #include "fffireball.h"
+#include "ffenemy.h"
 
 static void w_update(unsigned long e) {
     ff_flush();
@@ -849,6 +850,7 @@ static void real_overlay(void *s, const char *n, int f) { ((fn_overlay) (g_base 
 #define FN_PLAYER_UPDATE 0x51e828
 #define FN_FAMILIAR_UPDATE 0x808574
 #define FN_NPC_TAKE 0x69876c
+#define FN_NPC_UPDATE 0x68bd3c
 static fn_update o_player_update, o_familiar_update;
 static fn_take o_npc_take;
 static void w_player_update(unsigned long p) { fb_player_frame(p, o_player_update); }
@@ -858,6 +860,7 @@ static void w_familiar_update(unsigned long f) {
 }
 static int w_npc_take(unsigned long e, float dmg, unsigned long long flags, void *ref, int cd) {
     float before[HP_N];
+    if (en_hurt(e, dmg)) return 0;
     int have = fb_pre_hit(e, before);
     int r = o_npc_take(e, dmg, flags, ref, cd);
     if (have) fb_post_hit(e, dmg, ref, before);
@@ -905,6 +908,7 @@ void shim_ffminion_install(unsigned char *base) {
     g_sheet = fb_real_sheet;
     take_slot("Player::Update", PLAYER_VTABLE, 4, FN_PLAYER_UPDATE, (void *) w_player_update, (void **) &o_player_update);
     take_slot("Familiar::Update", FAMILIAR_VTABLE, 4, FN_FAMILIAR_UPDATE, (void *) w_familiar_update, (void **) &o_familiar_update);
+    take_slot("NPC::Update", NPC_VTABLE, 4, FN_NPC_UPDATE, (void *) w_npc_update, (void **) &o_npc_update);
     take_slot("NPC::TakeDamage", NPC_VTABLE, 9, FN_NPC_TAKE, (void *) w_npc_take, (void **) &o_npc_take);
 }
 #endif
