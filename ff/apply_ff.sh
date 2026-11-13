@@ -15,6 +15,7 @@ cp "$HERE/ffminion.c" "$CPP/ffminion.c"
 cp "$HERE/fffireball.h" "$CPP/fffireball.h"
 cp "$HERE/ffenemy.h" "$CPP/ffenemy.h"
 cp "$HERE/ffanim_table.h" "$CPP/ffanim_table.h"
+for h in ffenums.h ffoffsets.h ffsounds.h ffen_g1.h ffen_g2.h ffen_g3.h ffen_g4.h; do cp "$HERE/$h" "$CPP/$h"; done
 cp "$HERE/ffmenu.c" "$CPP/ffmenu.c"
 cp "$HERE/ffcharmenu.c" "$CPP/ffcharmenu.c"
 cp "$HERE/ffsound.c" "$CPP/ffsound.c"
@@ -49,6 +50,8 @@ python3 "$HERE/ffwatch_patch.py" "$CPP/pack.c"
 # the console: Fiend Folio's monsters in the ENEMIES tab (ffenemies_table.h is written by tools/spawner_ff_enemies.py)
 cp "$HERE/ffenemies_table.h" "$CPP/ffenemies_table.h"
 python3 "$HERE/ffconsole_patch.py" "$CPP"
+# category words in the console search (enemies, bosses, mini bosses, monsters, fiend folio, items, keys ...)
+python3 "$HERE/ffsearch_patch.py" "$CPP"
 # Mali crash (libGLES_mali.so, from libisaacport.so shim_gpu_passes_open+0x468): the per-pass timestamp queries of the report build
 # (gpu.c ts_harvest -> glGetQueryObjectivEXT on a glQueryCounterEXT query) fault inside the driver. Measured from the crash address
 # in the user's libisaacport.so. The timestamps are diagnostics only; the passes are still counted.

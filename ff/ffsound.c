@@ -35,11 +35,13 @@ const void *shim_pack_peek(const char *inner, long *length);
 void shim_pack_add(const char *path, const void *data, long length);
 
 /* the new sound ids, appended after the game's 833 (sounds.xml gets them, in memory only, the table is made 833 + FF_NSOUNDS long) */
-#define FF_NSOUNDS 9
+#include "ffsounds.h"
+#define FF_NBASE 9
+#define FF_NSOUNDS (FF_NBASE + FF_NSOUNDS_EXTRA)
 /* a sound record holds at most 7 samples (0x7f02bc: count at record+456, cmp #7 -> "exceeding max samples"), so the 8 hurt
  * samples are two sounds of 4 and one of them is picked at random */
 enum { ID_HURT_A = 833, ID_HURT_B, ID_DEATH, ID_DROP, ID_PICKUP, ID_PICKUP_RARE, ID_MINION, ID_FB_LAUNCH, ID_FB_LAND };
-static const struct { int id; const char *files[4]; } FF_SND[FF_NSOUNDS] = {
+static const struct { int id; const char *files[7]; } FF_SND0[FF_NBASE] = {
     { ID_HURT_A, { "fiiiiend/fiend_hurt01.wav", "fiiiiend/fiend_hurt02.wav", "fiiiiend/fiend_hurt03.wav", "fiiiiend/fiend_hurt04.wav" } },
     { ID_HURT_B, { "fiiiiend/fiend_hurt05.wav", "fiiiiend/fiend_hurt06.wav", "fiiiiend/fiend_hurt07.wav", "fiiiiend/fiend_hurt08.wav" } },
     { ID_DEATH, { "fiiiiend/fiend_death.wav" } },
@@ -50,6 +52,9 @@ static const struct { int id; const char *files[4]; } FF_SND[FF_NSOUNDS] = {
     { ID_FB_LAUNCH, { "FireBallLaunch.wav" } },          /* mod.Sounds.FireballLaunch (fiend.lua LaunchFireball) */
     { ID_FB_LAND, { "FireballLand.wav" } },              /* mod.Sounds.FireballLand (fiend.lua explodeFiendProj) */
 };
+/* record i of all FF_NSOUNDS: the nine of the Fiend character, then the generated ones of the monsters (ffsounds.h) */
+#define SND_ID(i) ((i) < FF_NBASE ? FF_SND0[i].id : FF_SND_X[(i) - FF_NBASE].id)
+#define SND_FILE(i, k) ((i) < FF_NBASE ? FF_SND0[i].files[k] : FF_SND_X[(i) - FF_NBASE].files[k])
 #define ID_HURT hurt_id()
 static int hurt_id(void);
 
@@ -67,20 +72,20 @@ void ffsound_on_open(const char *inner) {
     const char *end = 0;
     for (const char *p = xml; p + 9 <= xml + n; p++) if (!memcmp(p, "</sounds>", 9)) end = p;
     if (!end) { LOG("ffsound: no </sounds> in %s", inner); return; }
-    char add[4096]; int al = 0;
+    char add[16384]; int al = 0;
     for (int i = 0; i < FF_NSOUNDS; i++) {
-        al += snprintf(add + al, sizeof add - al, "\t<sound id=\"%d\">\n", FF_SND[i].id);
-        for (int k = 0; k < 4 && FF_SND[i].files[k]; k++) {
-            al += snprintf(add + al, sizeof add - al, "\t\t<sample weight=\"1\" path=\"fiendfolio/%s\" />\n", FF_SND[i].files[k]);
+        al += snprintf(add + al, sizeof add - al, "\t<sound id=\"%d\">\n", SND_ID(i));
+        for (int k = 0; k < 7 && SND_FILE(i, k); k++) {
+            al += snprintf(add + al, sizeof add - al, "\t\t<sample weight=\"1\" path=\"fiendfolio/%s\" />\n", SND_FILE(i, k));
             char from[96], to[400]; long wl = 0;
-            snprintf(from, sizeof from, "fiendfolio/sounds/%s", FF_SND[i].files[k]);
-            snprintf(to, sizeof to, "%ssfx/fiendfolio/%s", dir, FF_SND[i].files[k]);
+            snprintf(from, sizeof from, "fiendfolio/sounds/%s", SND_FILE(i, k));
+            snprintf(to, sizeof to, "%ssfx/fiendfolio/%s", dir, SND_FILE(i, k));
             const void *w = shim_pack_peek(from, &wl);
             if (w && wl > 0) {
                 shim_pack_add(to, w, wl);
                 /* the base game's sounds may be looked for under either resources folder of the pack */
                 static const char *const alt[] = { "rebirth-resources/data/", "repentance-resources/data/" };
-                for (int a = 0; a < 2; a++) { char t2[400]; snprintf(t2, sizeof t2, "%ssfx/fiendfolio/%s", alt[a], FF_SND[i].files[k]); if (strcmp(t2, to)) shim_pack_add(t2, w, wl); }
+                for (int a = 0; a < 2; a++) { char t2[400]; snprintf(t2, sizeof t2, "%ssfx/fiendfolio/%s", alt[a], SND_FILE(i, k)); if (strcmp(t2, to)) shim_pack_add(t2, w, wl); }
             } else LOG("ffsound: %s is missing from the assets", from);
         }
         al += snprintf(add + al, sizeof add - al, "\t</sound>\n");
@@ -115,6 +120,12 @@ static void engine_sound(int id, float vol, float pitch) {
     if (told < 14) { told++; LOG("ffsound: our own play of sound %d (vol %.2f, pitch %.2f)%s", id, (double) vol, (double) pitch, g_mgr ? "" : " - NO sound manager yet"); }
     if (!o_sfx || !g_mgr) return;
     g_own++; o_sfx(g_mgr, id, 0, 0, vol, pitch, 0.0f); g_own--;
+}
+
+/* the monsters (ffenemy.h) play their sounds through this: vanilla enum value or one of the FFSND_* ids */
+void ffsound_play(int id, float vol, float pitch) {
+    for (int i = 0; FF_SND_PARTS[i].n; i++) if (id == FF_SND_PARTS[i].first) { id += (int) rnd((unsigned) FF_SND_PARTS[i].n); break; }   /* a sound of more than 7 samples is several records: one at random */
+    engine_sound(id, vol, pitch);
 }
 
 static int ff_char(void) {                       /* the first player's character if it is a Fiend Folio one, else 0 */

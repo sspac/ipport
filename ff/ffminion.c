@@ -556,6 +556,7 @@ void ffsound_heart_drop(void) __attribute__((weak));
 void ffsound_minion_hit(void) __attribute__((weak));
 void ffsound_minion_crit(void) __attribute__((weak));
 typedef void (*fn_setframe)(void *, const char *, int);
+static fn_setframe g_setframe;
 #define FN_SPRITE_SETFRAME 0x89eab8
 static void to_heart(unsigned long e, int sub, float vx, float vy) {
     int v, st;
@@ -851,6 +852,8 @@ static void real_overlay(void *s, const char *n, int f) { ((fn_overlay) (g_base 
 #define FN_FAMILIAR_UPDATE 0x808574
 #define FN_NPC_TAKE 0x69876c
 #define FN_NPC_UPDATE 0x68bd3c
+#define PROJ_VTABLE 0xa8dc68
+#define FN_PROJ_UPDATE 0x677fd0
 static fn_update o_player_update, o_familiar_update;
 static fn_take o_npc_take;
 static void w_player_update(unsigned long p) { fb_player_frame(p, o_player_update); }
@@ -898,7 +901,7 @@ void shim_ffminion_install(unsigned char *base) {
     g_base = base;
     g_grid_index = (int (*)(unsigned long, const float *)) (base + FN_GRID_INDEX);
     g_grid_class = (int (*)(unsigned long, int)) (base + FN_GRID_COLLISION);
-    g_spawn = real_spawn; g_play = real_play; g_overlay = real_overlay; g_remove_overlay = real_remove_overlay; g_list_now = shim_eid_list_now; g_readable = shim_eid_readable;
+    g_setframe = (fn_setframe) (g_base + FN_SPRITE_SETFRAME); g_spawn = real_spawn; g_play = real_play; g_overlay = real_overlay; g_remove_overlay = real_remove_overlay; g_list_now = shim_eid_list_now; g_readable = shim_eid_readable;
     g_seed ^= (unsigned) now_ms();
     o_update = (fn_update) *slot;
     *slot = (unsigned long) w_update;
@@ -909,6 +912,7 @@ void shim_ffminion_install(unsigned char *base) {
     take_slot("Player::Update", PLAYER_VTABLE, 4, FN_PLAYER_UPDATE, (void *) w_player_update, (void **) &o_player_update);
     take_slot("Familiar::Update", FAMILIAR_VTABLE, 4, FN_FAMILIAR_UPDATE, (void *) w_familiar_update, (void **) &o_familiar_update);
     take_slot("NPC::Update", NPC_VTABLE, 4, FN_NPC_UPDATE, (void *) w_npc_update, (void **) &o_npc_update);
+    take_slot("Projectile::Update", PROJ_VTABLE, 4, FN_PROJ_UPDATE, (void *) w_proj_update, (void **) &o_proj_update);
     take_slot("NPC::TakeDamage", NPC_VTABLE, 9, FN_NPC_TAKE, (void *) w_npc_take, (void **) &o_npc_take);
 }
 #endif

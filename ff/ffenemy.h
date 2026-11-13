@@ -14,14 +14,14 @@
  */
 #include "ffanim_table.h"
 
-static int g_enlog[16], g_ensweep;
+static int g_enlog[64], g_ensweep;
 #define ENLOG(k, n, ...) do { if (g_enlog[k]++ < (n)) LOG(__VA_ARGS__); } while (0)
 #define EN_N 96
 typedef struct {
     unsigned long e; unsigned key; int type, variant, sub;
     int init, age, state, cd, cd2, af, dead_done, dir;
-    char anim[32]; int alen, aloop;
-    float f[6]; int i[6]; unsigned long ref;
+    char anim[32], ov[32]; int alen, aloop, ovf;
+    float f[6]; int i[6]; unsigned long ref, ref2;
 } en_t;
 static en_t g_en[EN_N];
 static int g_en_on = 1;
@@ -36,7 +36,7 @@ static en_t *en_slot(unsigned long e) {
     int free = -1;
     for (int i = 0; i < EN_N; i++) {
         if (g_en[i].e == e) {
-            if (g_en[i].type == *(const int *) (e + E_TYPE) && g_en[i].variant == *(const int *) (e + E_VARIANT)) return &g_en[i];
+            if (g_en[i].type == *(const int *) (e + E_TYPE) && g_en[i].variant == *(const int *) (e + E_VARIANT) && g_en[i].sub == *(const int *) (e + E_SUBTYPE)) return &g_en[i];
             g_en[i].e = 0;                                   /* the address came back as another entity */
         }
         if (!g_en[i].e && free < 0) free = i;
@@ -84,16 +84,77 @@ static int en_was_event(const en_t *s, const char *name, const char *ev) {
     return 0;
 }
 
+
+#include "ffenums.h"
+#include "ffoffsets.h"     /* engine field offsets, each measured and commented with how (agent: RE primitives) */
+#include "ffsounds.h"      /* FFSND_<key of mod.Sounds> = the sound id the port registered for it (ffsound.c) */
+/* ---------------------------------------------------------------------------------- engine fields (an offset of 0 in ffoffsets.h = not measured: the accessor logs once and does nothing) */
+#define EN_FIELD(name, off) static int name##_ok(void) { if (!(off)) { ENLOG(14, 40, "ffenemy: not done: field %s is not measured", #name); return 0; } return 1; }
+EN_FIELD(npc_state, OFF_NPC_STATE) EN_FIELD(npc_statef, OFF_NPC_STATEFRAME) EN_FIELD(npc_i1, OFF_NPC_I1) EN_FIELD(npc_i2, OFF_NPC_I2)
+EN_FIELD(npc_v1, OFF_NPC_V1) EN_FIELD(npc_v2, OFF_NPC_V2) EN_FIELD(npc_pcd, OFF_NPC_PROJCD) EN_FIELD(npc_pdelay, OFF_NPC_PROJDELAY) EN_FIELD(npc_scale, OFF_NPC_SCALE)
+EN_FIELD(ent_coll, OFF_ENT_COLLCLASS) EN_FIELD(ent_gcoll, OFF_ENT_GRIDCOLL) EN_FIELD(ent_friction, OFF_ENT_FRICTION) EN_FIELD(ent_mass, OFF_ENT_MASS) EN_FIELD(ent_target, OFF_ENT_TARGET)
+EN_FIELD(ent_child, OFF_ENT_CHILD) EN_FIELD(ent_spriteoff, OFF_ENT_SPRITEOFFSET) EN_FIELD(ent_depthoff, OFF_ENT_DEPTHOFFSET)
+EN_FIELD(proj_height, OFF_PROJ_HEIGHT) EN_FIELD(proj_fspeed, OFF_PROJ_FALLINGSPEED) EN_FIELD(proj_faccel, OFF_PROJ_FALLINGACCEL) EN_FIELD(proj_flags, OFF_PROJ_FLAGS)
+EN_FIELD(proj_scale, OFF_PROJ_SCALE) EN_FIELD(proj_curving, OFF_PROJ_CURVING) EN_FIELD(proj_homing, OFF_PROJ_HOMING)
+EN_FIELD(eff_timeout, OFF_EFF_TIMEOUT) EN_FIELD(eff_lifespan, OFF_EFF_LIFESPAN) EN_FIELD(eff_scale, OFF_EFF_SCALE)
+static int  en_get_state(unsigned long e) { return npc_state_ok() ? *(int *) (e + OFF_NPC_STATE) : 0; }
+static void en_set_state(unsigned long e, int v) { if (npc_state_ok()) *(int *) (e + OFF_NPC_STATE) = v; }
+static int  en_get_statef(unsigned long e) { return npc_statef_ok() ? *(int *) (e + OFF_NPC_STATEFRAME) : 0; }
+static void en_set_statef(unsigned long e, int v) { if (npc_statef_ok()) *(int *) (e + OFF_NPC_STATEFRAME) = v; }
+static void en_set_collision(unsigned long e, int c) { if (ent_coll_ok()) *(int *) (e + OFF_ENT_COLLCLASS) = c; }
+static void en_set_gridcoll(unsigned long e, int c) { if (ent_gcoll_ok()) *(int *) (e + OFF_ENT_GRIDCOLL) = c; }
+static void en_set_friction(unsigned long e, float f) { if (ent_friction_ok()) *(float *) (e + OFF_ENT_FRICTION) = f; }
+static void en_set_mass(unsigned long e, float f) { if (ent_mass_ok()) *(float *) (e + OFF_ENT_MASS) = f; }
+static void en_set_can_shut_doors(unsigned long e, int can) { *(unsigned char *) (e + OFF_NPC_CANSHUTDOORS) = can ? 0 : 1; }   /* stored inverted, see ffoffsets.h */
+static int  en_flag(unsigned long e, unsigned long long f) { return (*(const unsigned long long *) (e + E_FLAGS) & f) != 0; }
+static void en_flag_set(unsigned long e, unsigned long long f) { *(unsigned long long *) (e + E_FLAGS) |= f; }
+static void en_flag_clear(unsigned long e, unsigned long long f) { *(unsigned long long *) (e + E_FLAGS) &= ~f; }
+/* Entity status checks the Lua makes (mod:isScare / isConfuse / isCharm / isBaited ...) */
+static int en_scared(unsigned long e) { return en_flag(e, EF_FLAG_FEAR); }
+static int en_confused(unsigned long e) { return en_flag(e, EF_FLAG_CONFUSION); }
+static int en_charmed(unsigned long e) { return en_flag(e, EF_FLAG_CHARM); }
+/* the port's sound player (ffsound.c): sound id (vanilla enum or FFSND_*), volume, pitch */
+void ffsound_play(int id, float vol, float pitch);
+static void en_sound(int id, float vol, float pitch) { ffsound_play(id, vol, pitch); }
+/* projectiles: what FireProjectiles sets from a ProjectileParams after Game::Spawn(9, Variant ...) */
+typedef struct { int variant; unsigned long long flags; float height, fspeed, faccel, faccel_mod, scale, vel_multi, curving, homing; int has_height, has_fspeed, has_faccel, has_scale, has_faccel_mod, has_curving; float fspeed_mod, height_mod; int has_fspeed_mod, has_height_mod; } en_pp_t;
+static unsigned long en_shoot_p(unsigned long e, float x, float y, float vx, float vy, const en_pp_t *pp);
+
+
+/* more sprite pieces: SetFrame 0x89eab8 / SetOverlayFrame 0x89ee7c (measured: both call the same inner setter on the main (+0x30) / overlay (+0x60) animation state),
+ * the overlay's own frame counter, and FlipX. FlipX is NOT measured: it is emulated by the sign of SpriteScale.x (sprite +0xdc), logged once. */
+static void en_set_frame(en_t *s, const char *name, int frame) { s->af = frame; strncpy(s->anim, name, sizeof s->anim - 1); if (g_setframe) g_setframe((void *) (s->e + E_SPRITE), name, frame); }
+static void en_set_overlay_frame(unsigned long e, const char *name, int frame) { ((fn_setframe) (g_base + 0x89ee7c))((void *) (e + E_SPRITE), name, frame); }
+static void en_overlay(en_t *s, const char *name) { if (strcmp(s->ov, name)) { strncpy(s->ov, name, sizeof s->ov - 1); s->ovf = 0; g_overlay((void *) (s->e + E_SPRITE), name, 1); } }
+static void en_overlay_off(en_t *s) { if (s->ov[0]) { s->ov[0] = 0; g_remove_overlay((void *) (s->e + E_SPRITE)); } }
+static int en_overlay_finished(const en_t *s, const char *name) { const ffa_t *a = ffa_find(s->key, name); return a && !strcmp(s->ov, name) && !a->loop && s->ovf >= a->len; }
+static void en_flip(unsigned long e, int flip) {
+    float *sc = (float *) (e + E_SPRITE + 0xdc); float ax = fabsf(sc[0]); sc[0] = flip ? -ax : ax;
+    ENLOG(17, 1, "ffenemy: FlipX is emulated by the sign of the sprite's scale X (the real field is not measured)");
+}
+
 static float *en_target(unsigned long e) { unsigned long p = g_first_player(); (void) e; return p ? fpos(p) : 0; }
 static unsigned long en_spawn(int type, int variant, float x, float y, float vx, float vy, unsigned long spawner, int sub) {
     float p[2] = { x, y }, v[2] = { vx, vy };
     return g_spawn(en_game(), type, variant, p, v, spawner, sub, 0, 0);
 }
-/* Isaac.Spawn(9, variant, 0, ...) with a velocity: what FireProjectiles does for one shot (no Height/Falling params, see the header) */
-static void en_shoot(unsigned long e, int variant, float x, float y, float vx, float vy) {
-    ENLOG(6, 2, "ffenemy: not done: projectile params (Height/FallingSpeed/Scale/flags) - the shot is the game's default one");
-    en_spawn(9, variant, x, y, vx, vy, e, 0);
+/* NPC:FireProjectiles for one shot: Game::Spawn(9, Variant, ...) with the velocity, then the params' fields written on the new projectile */
+static unsigned long en_shoot_p(unsigned long e, float x, float y, float vx, float vy, const en_pp_t *pp) {
+    float m = pp && pp->vel_multi > 0 ? pp->vel_multi : 1.0f;
+    unsigned long pr = en_spawn(9, pp ? pp->variant : 0, x, y, vx * m, vy * m, e, 0);
+    if (!pr || !pp) return pr;
+    if (pp->has_faccel_mod && proj_faccel_ok()) *(float *) (pr + OFF_PROJ_FALLINGACCEL) += pp->faccel_mod;
+    if (pp->has_fspeed_mod && proj_fspeed_ok()) *(float *) (pr + OFF_PROJ_FALLINGSPEED) += pp->fspeed_mod;
+    if (pp->has_height_mod && proj_height_ok()) *(float *) (pr + OFF_PROJ_HEIGHT) += pp->height_mod;
+    if (pp->has_curving) ENLOG(15, 3, "ffenemy: not done: ProjectileParams.CurvingStrength (field not measured)");
+    if (pp->has_height && proj_height_ok()) *(float *) (pr + OFF_PROJ_HEIGHT) = pp->height;
+    if (pp->has_fspeed && proj_fspeed_ok()) *(float *) (pr + OFF_PROJ_FALLINGSPEED) = pp->fspeed;
+    if (pp->has_faccel && proj_faccel_ok()) *(float *) (pr + OFF_PROJ_FALLINGACCEL) = pp->faccel;
+    if (pp->flags && proj_flags_ok()) *(unsigned long long *) (pr + OFF_PROJ_FLAGS) |= pp->flags;
+    if (pp->has_scale) { if (proj_scale_ok()) *(float *) (pr + OFF_PROJ_SCALE) = pp->scale; }
+    return pr;
 }
+static void en_shoot(unsigned long e, int variant, float x, float y, float vx, float vy) { en_pp_t pp; memset(&pp, 0, sizeof pp); pp.variant = variant; en_shoot_p(e, x, y, vx, vy, &pp); }
 static void en_kill(unsigned long e) { hit_enemy(e, 1000000.0f); }
 static int en_dead(unsigned long e) { return !alive(e) || (g_hp_off && fb_hp(e) <= 0.0f); }
 static int en_room_clear(void) { int a, b, d, t; ffminion_room_info(&a, &b, &d, &t); return t == 0; }
@@ -124,19 +185,20 @@ static void ai_redhorf(en_t *s, unsigned long e) {
         en_play(s, "Death");
         if (en_event(s, "Death", "Explode")) { s->state = 0; en_kill(e); }
     } else {
-        if (dist < 160.0f) s->f[0] += 30.0f * (1.0f / (dist / 3.0f));
-        else if (dist > 200.0f && s->f[0] > 0) s->f[0] -= 1.0f;
-        if (s->f[0] > 100.0f) s->state = 1;
+        if (dist < 160.0f && !en_confused(e)) s->f[0] += 30.0f * (1.0f / (dist / 3.0f));
+        else if ((dist > 200.0f || en_confused(e)) && s->f[0] > 0) s->f[0] -= 1.0f;
+        if (s->f[0] > 100.0f || en_scared(e)) s->state = 1;
         else if (s->f[0] > 66.0f) en_play(s, "Shake03");
         else if (s->f[0] > 33.0f) en_play(s, "Shake02");
         else en_play(s, "Shake01");
     }
 }
 static void die_redhorf(en_t *s, unsigned long e) {
-    float *p = fpos(e), ex = s->f[0];
-    if (ex > 66.0f) for (int a = 0; a <= 360; a += 45) { float x, y; vrot(0, 9, (float) a, &x, &y); en_shoot(e, 0, p[0], p[1], x, y); }
-    else if (ex > 33.0f) for (int a = 0; a <= 360; a += 45) { float x, y; vrot(0, 6, (float) a, &x, &y); en_shoot(e, 0, p[0], p[1], x, y); }
-    else for (int a = 45; a <= 315; a += 90) { float x, y; vrot(0, 6, (float) a, &x, &y); en_shoot(e, 0, p[0], p[1], x, y); }
+    float *p = fpos(e), ex = s->f[0]; en_pp_t pp; memset(&pp, 0, sizeof pp);
+    en_sound(SOUND_SHAKEY_KID_ROAR, 1.0f, 1.0f);
+    if (ex > 66.0f) { pp.has_faccel_mod = 1; pp.faccel_mod = -0.05f; for (int a = 0; a <= 360; a += 45) { float x, y; vrot(0, 9, (float) a, &x, &y); en_shoot_p(e, p[0], p[1], x, y, &pp); } }
+    else if (ex > 33.0f) for (int a = 0; a <= 360; a += 45) { float x, y; vrot(0, 6, (float) a, &x, &y); en_shoot_p(e, p[0], p[1], x, y, &pp); }
+    else for (int a = 45; a <= 315; a += 90) { float x, y; vrot(0, 6, (float) a, &x, &y); en_shoot_p(e, p[0], p[1], x, y, &pp); }
 }
 
 /* ------------------------------------------------------------------------------------------ Square Fly (erfly/enemies/squarefly.lua) */
@@ -182,12 +244,18 @@ static void ai_slobber(en_t *s, unsigned long e) {
         if (en_line(p, t, 0) && dist <= 180.0f && s->cd >= s->cd2 && s->age > 4) { s->state = 1; s->cd = 0; s->cd2 = 85 + (int) rnd(16); }
     } else {
         g_remove_overlay((void *) (e + E_SPRITE));
-        en_play(s, "Attack");
         if (en_finished(s, "Attack")) { s->state = 0; s->anim[0] = 0; }
         else if (en_event(s, "Attack", "Shoot")) {
-            float mul = 7.0f; float x = cosf(ang / 57.29578f) * mul, y = sinf(ang / 57.29578f) * mul;
-            en_shoot(e, s->variant == 2100 ? 4 : 0, p[0], p[1], x, y);
-        }
+            float rad = ang / 57.29578f, x = cosf(rad), y = sinf(rad);
+            en_sound(SOUND_WHEEZY_COUGH, 1.0f, 1.1f);
+            en_pp_t pp; memset(&pp, 0, sizeof pp); pp.vel_multi = 7.0f;       /* 9 on Hard/Greedier (Difficulty % 2 == 1): the difficulty is not read here, normal assumed */
+            unsigned long ef = en_spawn(1000, 2, p[0], p[1], 0, 0, e, 5);
+            (void) ef;
+            ENLOG(16, 3, "ffenemy: not done: Slobber's mouth effect SpriteOffset/DepthOffset/Color/FollowParent, sprite FlipX");
+            if (s->variant == 2100) pp.variant = 4;
+            if (s->variant == 2101 && s->af >= 36) { pp.has_scale = 1; pp.scale = 1.4f; }
+            en_shoot_p(e, p[0], p[1], x, y, &pp);
+        } else en_play(s, "Attack");
     }
 }
 
@@ -204,6 +272,7 @@ static void ai_benign(en_t *s, unsigned long e) {
     else if (!strcmp(s->anim, "Retaliate")) {
         diag_move(s, e, 1.5f, &tx, &ty); v[0] = lerpf(v[0], tx, 0.1f); v[1] = lerpf(v[1], ty, 0.1f);
         if (en_event(s, "Retaliate", "shoot")) {
+            en_sound(SOUND_LITTLE_SPIT, 1.0f, (float) rint_(180, 220) / 100.0f);
             float a = frand() * 360.0f, *p = fpos(e);
             for (int i = 0; i < 3; i++) { float x, y; vrot(0, 8, a + 120.0f * i, &x, &y); en_shoot(e, 0, p[0], p[1], x, y); }
         }
@@ -297,6 +366,7 @@ static void ai_shotfly(en_t *s, unsigned long e) {
         ENLOG(10, 2, "ffenemy: not done: Shot Fly's collision class / no-knockback flags and the wait-then-descend subtype");
     }
     if (s->state == 2) {                                                       /* charging */
+        if (!s->i[3]) { s->i[3] = 1; en_sound(FFSND_Ricochet, 0.7f, 0.8f); }
         v[0] = s->f[2]; v[1] = s->f[3];
         if (en_box(p[0] + v[0], p[1] + v[1], 1)) en_kill(e);
         return;
@@ -358,7 +428,7 @@ static void ai_casualty(en_t *s, unsigned long e) {
     float *p = fpos(e), *v = fvel(e), *t = en_target(e); if (!t) return;
     if (!s->init) { s->init = 1; splat_at(e, 1.5f, 2); s->state = 0; }
     if (s->state == 0) {
-        if (en_event(s, "Walk", "Move")) en_walk_to(e, t, 4.0f, 1.8f, 1);
+        if (en_event(s, "Walk", "Move")) { en_walk_to(e, t, 4.0f, 1.8f, 1); }
         else en_play(s, "Walk");
         v[0] *= 0.9f; v[1] *= 0.9f;
         if (s->age % 10 == 5) { creep_at(e, 0.1f); splat_at(e, 0.5f, 1); }
@@ -366,9 +436,9 @@ static void ai_casualty(en_t *s, unsigned long e) {
     } else if (s->state == 1) {
         if (en_was_event(s, "Trip", "Shoot")) { v[0] *= 0.6f; v[1] *= 0.6f; } else { v[0] *= 0.9f; v[1] *= 0.9f; }
         if (en_finished(s, "Trip")) { s->state = 2; ENLOG(12, 2, "ffenemy: not done: Casualty's CanShutDoors = false (the corpse still counts for the room)"); }
-        else if (en_event(s, "Trip", "Move")) { float x = t[0] - p[0], y = t[1] - p[1]; vresize(&x, &y, 10.0f); v[0] = x; v[1] = y; }
+        else if (en_event(s, "Trip", "Move")) { en_sound(SOUND_FETUS_JUMP, 1.0f, 1.0f); float x = t[0] - p[0], y = t[1] - p[1]; vresize(&x, &y, 10.0f); v[0] = x; v[1] = y; }
         else if (en_event(s, "Trip", "Shoot")) {
-            v[0] *= 0.5f; v[1] *= 0.5f; creep_at(e, 3.0f); splat_at(e, 1.5f, 1);
+            en_sound(SOUND_MEAT_IMPACTS, 1.0f, 1.0f); v[0] *= 0.5f; v[1] *= 0.5f; creep_at(e, 3.0f); splat_at(e, 1.5f, 1);
             unsigned long f = en_spawn(1000, 16, p[0], p[1], 0, 0, e, 3); if (f) en_scale(f, 0.8f, 0.8f);
         } else en_play(s, "Trip");
     } else {
@@ -438,10 +508,97 @@ static const enemy_t g_enemies[] = {
     { 160, 461, ai_eternalfly, 0, 0, 1 },
 };
 #define N_ENEMIES ((int) (sizeof g_enemies / sizeof g_enemies[0]))
-static const enemy_t *en_find(int type, int variant) {
-    for (int i = 0; i < N_ENEMIES; i++) if (g_enemies[i].type == type && g_enemies[i].variant == variant) return &g_enemies[i];
+
+/* ------------------------------------------------------------------------------------------ pieces shared by the monster groups */
+/* npc:AnimWalkFrame(hori, vert, threshold): horizontal when |vx| > |vy| (and mirrored when going left), still (frame 0) at or under the threshold */
+static void en_walk_anim(en_t *s, unsigned long e, const char *hori, const char *vert, float thr) {
+    float *v = fvel(e);
+    if (vlen(v[0], v[1]) <= thr) { en_set_frame(s, s->anim[0] ? s->anim : vert, 0); return; }
+    if (fabsf(v[0]) > fabsf(v[1])) { en_play(s, hori); en_flip(e, v[0] < 0); } else { en_play(s, vert); en_flip(e, 0); }
+}
+static float en_room_x(int c) { return 40.0f + 40.0f * (float) c; }
+static float en_room_y(int r) { return 120.0f + 40.0f * (float) r; }
+/* Room:GetClampedPosition(pos, margin): inside the room's walls, margin px of the wall tiles' inner edge (negative margin = further in) */
+static void en_clamp_room(float *x, float *y, float margin) {
+    int w = g_gw ? (int) g_gw : 15, h = g_gh ? (int) g_gh : 9;
+    float x0 = en_room_x(1) - 20.0f + margin, x1 = en_room_x(w - 2) + 20.0f - margin, y0 = en_room_y(1) - 20.0f + margin, y1 = en_room_y(h - 2) + 20.0f - margin;
+    if (*x < x0) *x = x0; if (*x > x1) *x = x1; if (*y < y0) *y = y0; if (*y > y1) *y = y1;
+}
+/* Room:FindFreeTilePosition(pos, radius): the centre of the nearest free tile (or the position itself when its tile is free) */
+static void en_free_tile(float *x, float *y, float radius) {
+    if (!en_xy(*x, *y, 0)) return;
+    int w = g_gw ? (int) g_gw : 15, h = g_gh ? (int) g_gh : 9; float best = 1e9f, bx = *x, by = *y;
+    for (int r = 0; r < h; r++) for (int c = 0; c < w; c++) {
+        float tx = en_room_x(c), ty = en_room_y(r), d = vlen(tx - *x, ty - *y);
+        if (d <= radius && d < best && !en_xy(tx, ty, 0)) { best = d; bx = tx; by = ty; }
+    }
+    *x = bx; *y = by;
+}
+static int en_in_room(float x, float y, float margin) {
+    int w = g_gw ? (int) g_gw : 15, h = g_gh ? (int) g_gh : 9;
+    return x > en_room_x(0) - 20.0f + margin && x < en_room_x(w - 1) + 20.0f - margin && y > en_room_y(0) - 20.0f + margin && y < en_room_y(h - 1) + 20.0f - margin;
+}
+static void en_rand_vec(float *x, float *y, float len) { float a = frand() * 6.2831853f; *x = cosf(a) * len; *y = sinf(a) * len; }
+/* npc:Morph(type, variant, subtype, -1): the engine's in-place type change is not available, so the new monster is spawned where the old one is and the old one removed */
+static unsigned long en_morph(unsigned long e, int type, int variant, int sub) {
+    float *p = fpos(e), *v = fvel(e);
+    unsigned long n = en_spawn(type, variant, p[0], p[1], v[0], v[1], *(const unsigned long *) (e + 0x400), sub);
+    if (n) { en_flag_clear(n, EF_FLAG_APPEAR); en_remove(e); }
+    return n;
+}
+/* ------------------------------------------------------------------------------------------ projectiles that a monster keeps (Entity_Projectile vtable 0xa8dc68, slot 4 = Projectile::Update 0x677fd0) */
+#define PJ_N 48
+typedef struct { unsigned long p, parent; int kind; float a, b; } pj_t;
+enum { PJ_MUTANT_ORBITAL = 1 };
+static pj_t g_pj[PJ_N];
+static fn_update o_proj_update;
+static void pj_add(unsigned long p, unsigned long parent, int kind, float a) {
+    int f = 0; for (int i = 0; i < PJ_N; i++) if (!g_pj[i].p || !*(const unsigned char *) (g_pj[i].p + E_EXISTS)) { f = i; break; }
+    g_pj[f].p = p; g_pj[f].parent = parent; g_pj[f].kind = kind; g_pj[f].a = a; g_pj[f].b = 0;
+}
+static pj_t *pj_find(unsigned long p) { for (int i = 0; i < PJ_N; i++) if (g_pj[i].p == p) return &g_pj[i]; return 0; }
+static void w_proj_update(unsigned long e) {
+    pj_t *j = g_en_on ? pj_find(e) : 0;
+    if (j && *(const unsigned char *) (e + E_EXISTS) && j->kind == PJ_MUTANT_ORBITAL) {
+        float *p = fpos(e), *v = fvel(e);
+        en_set_gridcoll(e, 0);
+        unsigned long par = en_parent_alive(j->parent);
+        if (par) {
+            if (proj_height_ok()) *(float *) (e + OFF_PROJ_HEIGHT) = -35.0f;
+            float radius = 75.0f, *pp = fpos(par);                                   /* pd.radius of the Mutant Horf */
+            float cx = (radius + sinf(j->b) * 9.0f) * sinf(j->a), cy = (radius + sinf(j->b) * 9.0f) * cosf(j->a);
+            float dx = pp[0] - cx - p[0], dy = pp[1] - cy - p[1];
+            if (vlen(dx, dy) > 50.0f) vresize(&dx, &dy, 50.0f);
+            v[0] = dx; v[1] = dy;
+            if (j->a >= 360.0f) j->a = 0; else j->a += 0.1f;
+            j->b += 3.14159265f / (float) rint_(3, 12);
+            en_t *ps = en_slot(par);
+            if (!strcmp(ps->anim, "Attack") || !strcmp(ps->anim, "Attack2") || !strcmp(ps->anim, "DoubleAttack")) { v[0] /= 2; v[1] /= 2; }
+        } else {
+            v[0] *= 0.9f; v[1] *= 0.9f;
+            if (proj_faccel_ok()) *(float *) (e + OFF_PROJ_FALLINGACCEL) = 0.1f;
+        }
+    }
+    o_proj_update(e);
+}
+
+#include "ffen_g1.h"
+#include "ffen_g2.h"
+#include "ffen_g3.h"
+#include "ffen_g4.h"
+static const enemy_t *en_find_in(const enemy_t *t, int n, int type, int variant) {
+    for (int i = 0; i < n; i++) if (t[i].type == type && t[i].variant == variant) return &t[i];
     return 0;
 }
+static const enemy_t *en_find(int type, int variant) {
+    const enemy_t *r;
+    if ((r = en_find_in(g_enemies, N_ENEMIES, type, variant))) return r;
+    if ((r = en_find_in(g_tab_g1, N_TAB_G1, type, variant))) return r;
+    if ((r = en_find_in(g_tab_g2, N_TAB_G2, type, variant))) return r;
+    if ((r = en_find_in(g_tab_g3, N_TAB_G3, type, variant))) return r;
+    return en_find_in(g_tab_g4, N_TAB_G4, type, variant);
+}
+
 
 static fn_update o_npc_update;
 static void en_sweep(void) {
@@ -452,7 +609,7 @@ static void w_npc_update(unsigned long e) {
     const enemy_t *d = g_en_on ? en_find(type, *(const int *) (e + E_VARIANT)) : 0;      /* e is the engine's own pointer */
     if (d && *(const unsigned char *) (e + E_EXISTS)) {
         en_t *s = en_slot(e);
-        s->af++;
+        s->af++; if (s->ov[0]) s->ovf++;
         if (s->aloop && s->alen > 0 && s->af >= s->alen) s->af = 0;
         float x0 = fpos(e)[0], y0 = fpos(e)[1];
         if (en_dead(e)) {

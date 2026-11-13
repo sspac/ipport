@@ -9,6 +9,7 @@ cp "$HERE/ffminion.c" "$CPP/ffminion.c"
 [ -f "$HERE/fffireball.h" ] && cp "$HERE/fffireball.h" "$CPP/fffireball.h"
 [ -f "$HERE/ffenemy.h" ] && cp "$HERE/ffenemy.h" "$CPP/ffenemy.h"
 [ -f "$HERE/ffanim_table.h" ] && cp "$HERE/ffanim_table.h" "$CPP/ffanim_table.h"
+for h in ffenums.h ffoffsets.h ffsounds.h ffen_g1.h ffen_g2.h ffen_g3.h ffen_g4.h; do [ -f "$HERE/$h" ] && cp "$HERE/$h" "$CPP/$h"; done
 cp "$HERE/ffsay.h" "$CPP/ffsay.h"
 cp "$HERE/ffchars.c" "$CPP/ffchars.c"
 python3 - <<'PY'
