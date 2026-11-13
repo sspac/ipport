@@ -5,7 +5,7 @@ static void en_free_tile_pos(float *x, float *y) {
     en_clamp_room(x, y, 0);
     if (!en_xy(*x, *y, 0)) return;
     for (int r = 1; r < 8; r++) for (int dy = -r; dy <= r; dy++) for (int dx = -r; dx <= r; dx++) {
-        if (abs(dx) != r && abs(dy) != r) continue;
+        if ((dx < 0 ? -dx : dx) != r && (dy < 0 ? -dy : dy) != r) continue;
         float cx = *x + 40.0f * (float) dx, cy = *y + 40.0f * (float) dy; en_clamp_room(&cx, &cy, 0);
         if (!en_xy(cx, cy, 0)) { *x = cx; *y = cy; return; }
     }
