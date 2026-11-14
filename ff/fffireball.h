@@ -68,7 +68,7 @@ enum { SND_LAUNCH = 0, SND_LAND = 1, SND_BURST = 2, SND_FLAMEEND = 3, SND_BOSSEX
 void ffsound_fireball(int what, float vol, float pitch) __attribute__((weak));
 static void fb_sound(int what, float vol, float pitch) { if (ffsound_fireball) ffsound_fireball(what, vol, pitch); }
 
-static int g_fbl[16];
+static int g_fbl[32];
 #define FBLOGN(k, n, ...) do { if (g_fbl[k]++ < (n)) LOG(__VA_ARGS__); } while (0)
 #define FBLOG(k, ...) do { if (g_fbl[k]++ < 4) LOG(__VA_ARGS__); } while (0)
 static int (*g_trigger)(int action, int controller);
@@ -98,7 +98,7 @@ static unsigned long g_fb_room;
 static int g_fb_any;                                                   /* a Fiend is in the run: the damage hook only works then */
 
 typedef struct { unsigned long e; int type, variant, until; unsigned long follow; } tm_t;
-static tm_t g_tm[96];
+static tm_t g_tm[96], g_tmv[4];
 typedef struct { int used, age, anim, fiendish; unsigned long e, owner; float x, y, vx, vy, dmg; } shot_t;
 static shot_t g_sh[8];
 typedef struct { int used, age, fiendish; unsigned long e, owner; float x, y, vx, vy, size, dmg; int heart; } ember_t;
@@ -129,7 +129,20 @@ static void tm_run(void) {
         unsigned long e = g_tm[i].e;
         if (!fb_is(e, g_tm[i].type, g_tm[i].variant)) { g_tm[i].e = 0; continue; }
         if (g_tm[i].follow) { fpos(e)[0] = fpos(g_tm[i].follow)[0] + fvel(g_tm[i].follow)[0]; fpos(e)[1] = fpos(g_tm[i].follow)[1] + fvel(g_tm[i].follow)[1]; }
-        if (g_wt >= g_tm[i].until) { fb_kill(e); g_tm[i].e = 0; }
+        if (g_wt >= g_tm[i].until) {
+            if (g_tm[i].type == T_PICKUP) {                       /* a pickup is taken out the way the game does it (Entity::Remove, vtable slot 11), not by its flags */
+                const unsigned long *vt = *(const unsigned long *const *) e;
+                if (vt && g_readable(vt, 12 * 8)) ((void (*)(unsigned long)) vt[11])(e); else fb_kill(e);
+                for (int k = 0; k < 4; k++) if (!g_tmv[k].e) { g_tmv[k].e = e; g_tmv[k].type = g_tm[i].type; g_tmv[k].variant = g_tm[i].variant; g_tmv[k].until = g_wt + 2; break; }
+                FBLOGN(16, 6, "fffireball: the 60 frames of a pickup %d.%d are up (tick %d): it is removed", g_tm[i].type, g_tm[i].variant, g_wt);
+            } else fb_kill(e);
+            g_tm[i].e = 0;
+        }
+    }
+    for (int k = 0; k < 4; k++) {                               /* a removed pickup that is still there two ticks later is taken out by its flags */
+        if (!g_tmv[k].e || g_wt < g_tmv[k].until) continue;
+        if (fb_is(g_tmv[k].e, g_tmv[k].type, g_tmv[k].variant)) { fb_kill(g_tmv[k].e); FBLOGN(17, 6, "fffireball: a pickup %d.%d survived Remove: taken out by its flags", g_tmv[k].type, g_tmv[k].variant); }
+        g_tmv[k].e = 0;
     }
 }
 
@@ -203,7 +216,7 @@ static void fb_heart_at(float x, float y) {
     if (rnd(2) >= 1) { FBLOGN(14, 12, "fffireball: a kill by fire, the 50%% roll was lost"); return; }
     float a = fb_rf(0, 6.2831853f), sp = fb_rf(0.1f, 2.0f);
     unsigned long h = fb_make(T_PICKUP, V_HALF_IMMORAL, 0, x, y, cosf(a) * sp, sinf(a) * sp, first_player());
-    if (h) { tm_add(h, T_PICKUP, V_HALF_IMMORAL, 60, 0); FBLOGN(3, 4, "fffireball: a half immoral heart for a kill by fire"); }
+    if (h) { tm_add(h, T_PICKUP, V_HALF_IMMORAL, 60, 0); FBLOGN(3, 4, "fffireball: a half immoral heart for a kill by fire (tick %d, gone at tick %d)", g_wt, g_wt + 60); }
     else FBLOGN(15, 4, "fffireball: a half immoral heart was due but the spawn gave nothing");
 }
 static void fb_mark(unsigned long e, float dmg, float hp0, float hp1, unsigned long player) {
@@ -619,7 +632,7 @@ void fb_before_update(unsigned long p) {
     g_fb_any = 1;
     int frame = g_frame_fn ? g_frame_fn() : 0;
     if (g_fb_last_frame > 60 && frame <= 30) {                           /* a new run: nothing of the last one stays */
-        memset(g_fp, 0, sizeof g_fp); memset(g_sh, 0, sizeof g_sh); memset(g_em, 0, sizeof g_em); memset(g_tm, 0, sizeof g_tm); memset(g_pool, 0, sizeof g_pool);
+        memset(g_fp, 0, sizeof g_fp); memset(g_sh, 0, sizeof g_sh); memset(g_em, 0, sizeof g_em); memset(g_tm, 0, sizeof g_tm); memset(g_tmv, 0, sizeof g_tmv); memset(g_pool, 0, sizeof g_pool);
         fb_targets_dirty(); st = fb_state(p, 1); LOG("fffireball: the frame count went back (%d -> %d): a new run, the fireballs start from none", g_fb_last_frame, frame);
     }
     (void) frame;
@@ -633,7 +646,7 @@ void fb_after_update(unsigned long p) {
     fb_sync_orbiters(st, p);
     if (frame == g_fb_world_frame) return;                                           /* the world below moves once a game frame, not once a player */
     g_fb_world_frame = frame; g_fb_last_frame = frame; g_wt++;
-    { unsigned long rm = fb_room_sig(); if (rm != g_fb_room) { g_fb_room = rm; g_grid_dump_in = 20; g_start_wait = 4; g_nstart = 0; memset(g_kw, 0, sizeof g_kw); FBLOGN(12, 12, "fffireball: new room, grid %dx%d, the player (%.0f,%.0f) stands on a tile of value %d", g_gw, g_gh, fpos(p)[0], fpos(p)[1], g_gw ? fb_tile(fpos(p)[0], fpos(p)[1]) : -1); memset(g_sh, 0, sizeof g_sh); memset(g_em, 0, sizeof g_em); memset(g_tm, 0, sizeof g_tm); memset(g_pool, 0, sizeof g_pool); fb_targets_dirty(); } }   /* a new room: what was flying is gone with it */
+    { unsigned long rm = fb_room_sig(); if (rm != g_fb_room) { g_fb_room = rm; g_grid_dump_in = 20; g_start_wait = 4; g_nstart = 0; memset(g_kw, 0, sizeof g_kw); FBLOGN(12, 12, "fffireball: new room, grid %dx%d, the player (%.0f,%.0f) stands on a tile of value %d", g_gw, g_gh, fpos(p)[0], fpos(p)[1], g_gw ? fb_tile(fpos(p)[0], fpos(p)[1]) : -1); memset(g_sh, 0, sizeof g_sh); memset(g_em, 0, sizeof g_em); memset(g_tm, 0, sizeof g_tm); memset(g_tmv, 0, sizeof g_tmv); memset(g_pool, 0, sizeof g_pool); fb_targets_dirty(); } }   /* a new room: what was flying is gone with it */
     for (int i = 0; i < FB_MAXP; i++) if (g_fp[i].p) {
         g_fp[i].ang += FB_ORBIT_STEP;
         for (int k = 0; k < FB_MAXB; k++) if (g_fp[i].fam[k]) g_fp[i].fage[k]++;

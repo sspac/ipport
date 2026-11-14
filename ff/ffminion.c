@@ -865,7 +865,9 @@ static int w_npc_take(unsigned long e, float dmg, unsigned long long flags, void
     float before[HP_N];
     if (en_hurt(e, dmg)) return 0;
     int have = fb_pre_hit(e, before);
+    float vel0[2]; ht_before(e, dmg, flags, vel0);
     int r = o_npc_take(e, dmg, flags, ref, cd);
+    ht_after(e, dmg, flags, vel0, r);
     if (have) fb_post_hit(e, dmg, ref, before);
     return r;
 }
@@ -901,7 +903,7 @@ void shim_ffminion_install(unsigned char *base) {
     g_base = base;
     g_grid_index = (int (*)(unsigned long, const float *)) (base + FN_GRID_INDEX);
     g_grid_class = (int (*)(unsigned long, int)) (base + FN_GRID_COLLISION);
-    g_setframe = (fn_setframe) (g_base + FN_SPRITE_SETFRAME); g_spawn = real_spawn; g_play = real_play; g_overlay = real_overlay; g_remove_overlay = real_remove_overlay; g_list_now = shim_eid_list_now; g_readable = shim_eid_readable;
+    g_setframe = (fn_setframe) (g_base + FN_SPRITE_SETFRAME); g_setoframe = (fn_setframe) (g_base + 0x89ee7c); g_spawn = real_spawn; g_play = real_play; g_overlay = real_overlay; g_remove_overlay = real_remove_overlay; g_list_now = shim_eid_list_now; g_readable = shim_eid_readable;
     g_seed ^= (unsigned) now_ms();
     o_update = (fn_update) *slot;
     *slot = (unsigned long) w_update;

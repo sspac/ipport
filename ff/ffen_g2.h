@@ -242,7 +242,7 @@ static const enemy_t g_tab_g2[] = {
     { 160, 10, ai_dung, 0, 0, 0 },
     { 160, 500, ai_tallboi, 0, hurt_tallboi, 0 },
     { 160, 501, ai_shitling, 0, 0, 0 },
-    { 160, 560, ai_poobottle, 0, 0, 0 },
-    { 451, 60, ai_potluck, 0, 0, 0 },
+    { 160, 560, ai_poobottle, 0, 0, 0, 1 },
+    { 451, 60, ai_potluck, 0, 0, 0, 1 },
 };
 #define N_TAB_G2 ((int) (sizeof g_tab_g2 / sizeof g_tab_g2[0]))

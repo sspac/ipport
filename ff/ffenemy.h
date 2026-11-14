@@ -21,7 +21,7 @@ typedef struct {
     unsigned long e; unsigned key; int type, variant, sub;
     int init, age, state, cd, cd2, af, dead_done, dir;
     char anim[32], ov[32]; int alen, aloop, ovf;
-    float f[6]; int i[6]; unsigned long ref, ref2;
+    float f[6]; int i[6]; unsigned long ref, ref2; int nocarry;
 } en_t;
 static en_t g_en[EN_N];
 static int g_en_on = 1;
@@ -124,7 +124,8 @@ static unsigned long en_shoot_p(unsigned long e, float x, float y, float vx, flo
 /* more sprite pieces: SetFrame 0x89eab8 / SetOverlayFrame 0x89ee7c (measured: both call the same inner setter on the main (+0x30) / overlay (+0x60) animation state),
  * the overlay's own frame counter, and FlipX. FlipX is NOT measured: it is emulated by the sign of SpriteScale.x (sprite +0xdc), logged once. */
 static void en_set_frame(en_t *s, const char *name, int frame) { s->af = frame; strncpy(s->anim, name, sizeof s->anim - 1); if (g_setframe) g_setframe((void *) (s->e + E_SPRITE), name, frame); }
-static void en_set_overlay_frame(unsigned long e, const char *name, int frame) { ((fn_setframe) (g_base + 0x89ee7c))((void *) (e + E_SPRITE), name, frame); }
+static fn_setframe g_setoframe;
+static void en_set_overlay_frame(unsigned long e, const char *name, int frame) { if (g_setoframe) g_setoframe((void *) (e + E_SPRITE), name, frame); }   /* null in the host tests */
 static void en_overlay(en_t *s, const char *name) { if (strcmp(s->ov, name)) { strncpy(s->ov, name, sizeof s->ov - 1); s->ovf = 0; g_overlay((void *) (s->e + E_SPRITE), name, 1); } }
 static void en_overlay_off(en_t *s) { if (s->ov[0]) { s->ov[0] = 0; g_remove_overlay((void *) (s->e + E_SPRITE)); } }
 static int en_overlay_finished(const en_t *s, const char *name) { const ffa_t *a = ffa_find(s->key, name); return a && !strcmp(s->ov, name) && !a->loop && s->ovf >= a->len; }
@@ -291,12 +292,18 @@ static void en_scale(unsigned long e, float sx, float sy) { float *sc = (float *
 /* a walker's step toward (tx,ty): in sight -> straight, else along the breadth-first path (Pathfinder:FindGridPath adds speed along it) */
 static void en_walk_to(unsigned long e, const float *t, float speed_direct, float speed_path, int set) {
     float *p = fpos(e), *v = fvel(e); float wx, wy;
+    /* Pathfinder:FindGridPath(pos, speed, ...) adds `speed` along the way each frame. The Lua writes its own speeds as "speed / 7" .. "speed / 10"
+     * for a wanted px/frame, i.e. the walk settles at about 9 times the number given. Whatever the engine's own damping does, the speed this adds
+     * is never allowed to grow past that (nor past what the monster already had: a lunge is not cut short). */
+    float old = vlen(v[0], v[1]), sp;
     if (en_line_clear(p[0], p[1], t[0], t[1], 0)) {
-        float x = t[0] - p[0], y = t[1] - p[1]; vresize(&x, &y, speed_direct);
-        if (set) { v[0] = x; v[1] = y; } else { v[0] += x; v[1] += y; }
+        float x = t[0] - p[0], y = t[1] - p[1]; vresize(&x, &y, speed_direct); sp = speed_direct;
+        if (set) { v[0] = x; v[1] = y; return; } else { v[0] += x; v[1] += y; }
     } else if (path_step(p[0], p[1], t[0], t[1], 0, &wx, &wy)) {
-        float x = wx - p[0], y = wy - p[1]; vresize(&x, &y, speed_path); v[0] += x; v[1] += y;
-    }
+        float x = wx - p[0], y = wy - p[1]; vresize(&x, &y, speed_path); sp = speed_path; v[0] += x; v[1] += y;
+    } else return;
+    float lim = sp * 9.0f; if (lim < old) lim = old;
+    if (vlen(v[0], v[1]) > lim) vresize(&v[0], &v[1], lim);
 }
 static en_t *en_adopt(unsigned long e) { return e ? en_slot(e) : 0; }
 static unsigned long en_parent_alive(unsigned long ref) {                      /* a monster we hold a pointer to must be in the room's list and alive */
@@ -493,7 +500,7 @@ static void ai_eternalfly(en_t *s, unsigned long e) {
 }
 
 /* ------------------------------------------------------------------------------------------ dispatch */
-typedef struct { int type, variant; void (*ai)(en_t *, unsigned long); void (*die)(en_t *, unsigned long); void (*hurt)(en_t *, unsigned long, float); int immune; } enemy_t;
+typedef struct { int type, variant; void (*ai)(en_t *, unsigned long); void (*die)(en_t *, unsigned long); void (*hurt)(en_t *, unsigned long, float); int immune; int free_move; } enemy_t;   /* free_move: it may leave the room on purpose (flies away, flees) */
 static const enemy_t g_enemies[] = {
     { 160, 630, ai_redhorf, die_redhorf, 0 },
     { 152, 0, ai_squarefly, die_burst, 0 },
@@ -604,23 +611,128 @@ static fn_update o_npc_update;
 static void en_sweep(void) {
     for (int i = 0; i < EN_N; i++) if (g_en[i].e && (!*(const unsigned char *) (g_en[i].e + E_EXISTS) || *(const int *) (g_en[i].e + E_TYPE) != g_en[i].type)) g_en[i].e = 0;
 }
+/* ---- what the engine does with the velocity the AI set. A real run (ff-codigo40) showed monsters that never went to the player, a jumper that
+ * jumped on the spot and flyers pushed out of the map: the AI's formulas match the Lua, so the suspect is the engine's own Update leaving
+ * the position alone for these monsters. Every monster is therefore measured: the position before the engine's update, the velocity the AI
+ * left, and where it ended. If the engine moved it less than 5%% of what the velocity asks for, the move is made here (per axis, against
+ * the walls the engine's own grid answers), and the first times are logged ("telemetry" lines say what each kind did). */
+typedef struct { int type, variant, frames, moving, ignored, samples, sums, good, kept, zeroed; } tel_t;
+static tel_t g_tel[48];
+static tel_t *tel_of(int type, int variant) {
+    for (int i = 0; i < 48; i++) if (g_tel[i].type == type && g_tel[i].variant == variant && g_tel[i].frames >= 0) return &g_tel[i];
+    for (int i = 0; i < 48; i++) if (!g_tel[i].type) { g_tel[i].type = type; g_tel[i].variant = variant; return &g_tel[i]; }
+    return 0;
+}
+/* ---- log only, no behaviour: where the physics numbers live and how a hit moves a monster. XML says friction="1" and a collisionMass per monster
+ * (Slim 45); a dump of the entity's dwords for a few FF monsters and a few vanilla ones shows which offset holds 1.0 / the mass, and the hit trace shows
+ * the velocity a hit adds and how fast it dies away (or not). */
+typedef struct { int type, variant, hits, dumped; } dk_t;
+static dk_t g_dk[32]; static int g_dumps_ff, g_dumps_van;
+static dk_t *dk_of(int type, int variant) {
+    for (int i = 0; i < 32; i++) if (g_dk[i].type == type && g_dk[i].variant == variant) return &g_dk[i];
+    for (int i = 0; i < 32; i++) if (!g_dk[i].type) { g_dk[i].type = type; g_dk[i].variant = variant; return &g_dk[i]; }
+    return 0;
+}
+static void en_dump(unsigned long e, int vanilla) {
+    int *cnt = vanilla ? &g_dumps_van : &g_dumps_ff;
+    int type = *(const int *) (e + E_TYPE), var = *(const int *) (e + E_VARIANT), sub = *(const int *) (e + E_SUBTYPE);
+    if (*cnt >= (vanilla ? 5 : 4)) return;
+    dk_t *k = dk_of(type, var); if (!k || k->dumped) return;
+    k->dumped = 1; (*cnt)++;
+    LOG("ffenemy: dump %s %d.%d.%d at %lx (nonzero dwords from +0x200 to +0x400, as +off=float/hex)", vanilla ? "VANILLA" : "FF", type, var, sub, e);
+    char buf[300]; int n = 0; buf[0] = 0;
+    for (int off = 0x200; off < 0x400; off += 4) {
+        unsigned w = *(const unsigned *) (e + off); if (!w) continue;
+        float f; memcpy(&f, &w, 4);
+        int ok = (f > -100000.0f && f < 100000.0f && (f > 0.0001f || f < -0.0001f));
+        n += snprintf(buf + n, sizeof buf - (size_t) n, " +%x=%s%g/%x", off, ok ? "" : "~", ok ? (double) f : 0.0, w);
+        if (n > 230) { LOG("ffenemy: dump%s", buf); n = 0; buf[0] = 0; }
+    }
+    if (n) LOG("ffenemy: dump%s", buf);
+}
+typedef struct { unsigned long e; int left, type, variant, age; } ht_t;
+static ht_t g_ht[6];
+static void ht_before(unsigned long e, float dmg, unsigned long long flags, float *vel) {      /* in NPC::TakeDamage, before the engine's own */
+    vel[0] = fvel(e)[0]; vel[1] = fvel(e)[1]; (void) dmg; (void) flags;
+}
+static void ht_after(unsigned long e, float dmg, unsigned long long flags, const float *vel, int result) {
+    int type = *(const int *) (e + E_TYPE), var = *(const int *) (e + E_VARIANT);
+    dk_t *k = dk_of(type, var);
+    if (!k || k->hits >= 3) return;
+    k->hits++;
+    int slot = -1; for (int i = 0; i < 6; i++) if (!g_ht[i].left) { slot = i; break; }
+    float *p = fpos(e), *v = fvel(e);
+    LOG("ffenemy: hit %d.%d dmg %.1f flags %llx result %d: velocity (%.2f,%.2f) -> (%.2f,%.2f) = pushed %.2f px/frame, pos (%.0f,%.0f)", type, var, dmg, flags, result, vel[0], vel[1], v[0], v[1], vlen(v[0] - vel[0], v[1] - vel[1]), p[0], p[1]);
+    if (slot >= 0) { g_ht[slot].e = e; g_ht[slot].left = 10; g_ht[slot].type = type; g_ht[slot].variant = var; g_ht[slot].age = 0; }
+}
+static void ht_trace(unsigned long e) {       /* at the start of every NPC update: the 10 frames after a traced hit */
+    for (int i = 0; i < 6; i++) if (g_ht[i].left && g_ht[i].e == e) {
+        g_ht[i].left--; g_ht[i].age++;
+        LOG("ffenemy: hit trace %d.%d +%d: pos (%.0f,%.0f) velocity (%.2f,%.2f) |v| %.2f", g_ht[i].type, g_ht[i].variant, g_ht[i].age, fpos(e)[0], fpos(e)[1], fvel(e)[0], fvel(e)[1], vlen(fvel(e)[0], fvel(e)[1]));
+    }
+}
+static void en_post(en_t *s, unsigned long e, const enemy_t *d, const float *pa, const float *va, const float *vb) {
+    float *p = fpos(e), *v = fvel(e);
+    float mx = p[0] - pa[0], my = p[1] - pa[1], moved = vlen(mx, my), want = vlen(va[0], va[1]);
+    int gc = ent_gcoll_ok() ? *(const int *) (e + OFF_ENT_GRIDCOLL) : -1, cc = ent_coll_ok() ? *(const int *) (e + OFF_ENT_COLLCLASS) : -1;
+    tel_t *t = tel_of(s->type, s->variant);
+    if (t && want > 1.0f && moved >= 0.5f * want) t->good++;          /* the engine does move this kind: it is left alone from the tenth proof on */
+    int ignored = want > 0.5f && moved < 0.05f * want && !s->nocarry && !(t && t->good >= 10), carried = 0;
+    if (ignored) {                                                  /* the engine did not move it: do what Entity::Update would have */
+        float nx = pa[0] + va[0], ny = pa[1] + va[1];
+        int fly = gc != 5;                                          /* GRIDCOLL_GROUND (5) meets rocks and pits too; the others only walls */
+        int grid = gc != 0 && (g_gw || g_grid_class);
+        if (!grid || !en_box(nx, pa[1], fly)) p[0] = nx;
+        if (!grid || !en_box(p[0], ny, fly)) p[1] = ny;
+        carried = 1;
+    }
+    /* the engine's own Update may also throw the velocity away (a friction of 0): then the AI's lerp starts from nothing every frame and the monster
+     * crawls. A kind that, ten times, ended its update with the velocity gone after moving, and never kept it, gets the AI's velocity back. */
+    float veng = vlen(v[0], v[1]);
+    if (t && want > 1.0f && moved >= 0.5f * want) { if (veng >= 0.5f * want) t->kept++; else if (veng < 0.1f * want) t->zeroed++; }
+    if (want > 1.0f && veng < 0.5f * want && !s->nocarry && ((t && t->zeroed >= 10 && t->kept == 0) || ignored)) { v[0] = va[0]; v[1] = va[1]; }
+    if (!d->free_move && g_gw && !s->nocarry) {                       /* a monster that is not meant to leave stays inside the room's walls */
+        float x = p[0], y = p[1]; en_clamp_room(&x, &y, 0.0f);
+        if (x != p[0] || y != p[1]) {
+            ENLOG(19, 24, "ffenemy: %d.%d at (%.0f,%.0f) was outside the room: put back at (%.0f,%.0f)", s->type, s->variant, p[0], p[1], x, y);
+            if (x != p[0]) { v[0] = 0; } if (y != p[1]) { v[1] = 0; }
+            p[0] = x; p[1] = y;
+        }
+    }
+    if (t) {
+        t->frames++; if (want > 0.3f) t->moving++; if (ignored) t->ignored++;
+        int moving = want > 0.3f;
+        if ((s->age == 3 || (moving && s->age % 12 == 0)) && t->samples < 7) {
+            float *pl = en_target(e); t->samples++;
+            LOG("ffenemy: telemetry %d.%d.%d age %d pos (%.0f,%.0f) v0 (%.2f,%.2f) vAI (%.2f,%.2f) moved (%.2f,%.2f) vEng (%.2f,%.2f) player (%.0f,%.0f) st %d anim %s/%d gc %d cc %d carried %d",
+                s->type, s->variant, s->sub, s->age, pa[0], pa[1], vb[0], vb[1], va[0], va[1], mx, my, v[0], v[1], pl ? pl[0] : -1.0f, pl ? pl[1] : -1.0f, s->state, s->anim, s->af, gc, cc, carried);
+        }
+        if (t->frames % 300 == 0 && t->sums < 4) { t->sums++; LOG("ffenemy: telemetry summary %d.%d: %d frames, %d with the AI moving it, %d where the engine ignored the velocity, velocity kept %d / thrown away %d times", s->type, s->variant, t->frames, t->moving, t->ignored, t->kept, t->zeroed); }
+    }
+}
 static void w_npc_update(unsigned long e) {
     int type = *(const int *) (e + E_TYPE);
     const enemy_t *d = g_en_on ? en_find(type, *(const int *) (e + E_VARIANT)) : 0;      /* e is the engine's own pointer */
+    en_t *s = 0; float pa[2] = { 0, 0 }, va[2] = { 0, 0 }, vb[2] = { 0, 0 };
+    ht_trace(e);
+    if (*(const unsigned char *) (e + E_EXISTS)) en_dump(e, d == 0);
     if (d && *(const unsigned char *) (e + E_EXISTS)) {
-        en_t *s = en_slot(e);
+        s = en_slot(e);
         s->af++; if (s->ov[0]) s->ovf++;
         if (s->aloop && s->alen > 0 && s->af >= s->alen) s->af = 0;
         float x0 = fpos(e)[0], y0 = fpos(e)[1];
+        vb[0] = fvel(e)[0]; vb[1] = fvel(e)[1];
         if (en_dead(e)) {
             if (!s->dead_done) { s->dead_done = 1; ENLOG(0, 24, "ffenemy: %d.%d dies (frame %d)", type, s->variant, s->age); if (d->die) d->die(s, e); }
+            s = 0;                                                  /* the corpse is left to the engine */
         } else {
             if (d->ai) d->ai(s, e);
         }
-        s->age++;
-        ENLOG(1, 60, "ffenemy: %d.%d frame %d at (%.0f,%.0f) vel (%.2f,%.2f) anim %s/%d", type, s->variant, s->age, x0, y0, fvel(e)[0], fvel(e)[1], s->anim, s->af);
+        if (s) { s->age++; pa[0] = fpos(e)[0]; pa[1] = fpos(e)[1]; va[0] = fvel(e)[0]; va[1] = fvel(e)[1]; }
+        (void) x0; (void) y0;
     }
     o_npc_update(e);
+    if (s && d && *(const unsigned char *) (e + E_EXISTS) && s->e == e) en_post(s, e, d, pa, va, vb);
     if ((g_ensweep++ & 255) == 0) en_sweep();
 }
 /* the NPC TakeDamage hook asks this: a Hurt callback of the monster */

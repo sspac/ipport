@@ -295,7 +295,7 @@ static void ai_tap(en_t *s, unsigned long e) {
 static const enemy_t g_tab_g3[] = {
     { 160, 820, ai_slim, die_slim, 0, 0 },
     { 160, 760, ai_bowler, 0, hurt_bowler, 0 },
-    { 155, 0, ai_weaver, 0, 0, 0 },
+    { 155, 0, ai_weaver, 0, 0, 0, 1 },
     { 160, 490, ai_tap, 0, 0, 1 },
 };
 #define N_TAB_G3 ((int) (sizeof g_tab_g3 / sizeof g_tab_g3[0]))
