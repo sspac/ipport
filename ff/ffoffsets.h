@@ -11,7 +11,7 @@
 #define OFF_ENT_COLLCLASS 0x1e4   /* int. Entity ctor 0x82bd6c-0x82bd70 stores 4 (ENTCOLL_ALL, the Lua default of a bare entity); 0x82dcb8-0x82dcc0 (Entity::IsActiveEnemy 0x82dca8) requires it >= 2 (ENTCOLL_PLAYEROBJECTS) */
 #define OFF_ENT_GRIDCOLL 0x1e0   /* int. Entity init 0x82c014 stores 3, 0x82c198-0x82c1a4 store 0 / 5 / 6 (NONE, GRIDCOLL_GROUND 5, BULLET 6); Entity::Update 0x82d5f4 / 0x82d2cc compare it with 5 and 3 */
 #define OFF_ENT_FRICTION 0
-#define OFF_ENT_MASS 0
+#define OFF_ENT_MASS 0x350       /* float. Measured from the ff-codigo42 dumps: Slammer 3 (XML collisionMass 3), two Fatty-like 100; no AI uses it yet */
 #define OFF_ENT_TARGET 0
 #define OFF_ENT_CHILD 0
 #define OFF_ENT_SPRITEOFFSET 0

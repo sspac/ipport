@@ -19,7 +19,7 @@
  *   checked before it is written: if it is not that function nothing is touched), slot 9 = TakeDamage(this, float,
  *   u64 flags, EntityRef *, int) (0x7220dc for pickups, 0x69876c for NPCs: called through the TARGET's own vtable),
  *   slot 18 = IsActiveEnemy (NPC 0x69aae4: byte +0xcc8 set and flag bit 29 (+0x1bb & 0x20, friendly) clear), slot 19 =
- *   IsVulnerableEnemy (0x69ab04: byte +0xcc9). Entity: position +0x310, velocity +0x320, Size +0x344 (the float the game
+ *   IsVulnerableEnemy (0x69ab04: byte +0xcc9). Entity: position +0x310, velocity +0x334 (ff-codigo43: +0x320 was wrong, a monster's hit and the log showed it), Size +0x344 (the float the game
  *   adds for two entities 14 times), sprite +0x50, type/variant/subtype +0x38/+0x3c/+0x40, exists/dead +0x1c2/+0x1c3.
  *   Sprite: Play 0x89e82c(sprite, name, force), SetFrame 0x89eab8(sprite, name, frame), SetOverlayFrame 0x89ee7c(sprite,
  *   name, frame) (it sets the overlay animation and its frame; the overlay sits at sprite+0x60). Player: MaxFireDelay
@@ -71,7 +71,7 @@
 #define E_EXISTS 0x1c2
 #define E_DEAD 0x1c3
 #define E_POS 0x310
-#define E_VEL 0x320
+#define E_VEL_DEFAULT 0x334        /* the engine's Velocity (see the velocity probe in ffenemy.h): the grid collision and the movement direction read the pair at +0x334/+0x338 */
 #define E_SIZE 0x344
 #define SPRITE_OFFSET_AT 0x108
 #define LIST_ARRAY 0x78
@@ -141,7 +141,8 @@ static int (*g_readable)(const void *, unsigned long);
 
 /* ---------------------------------------------------------------------------------------------- tiny helpers */
 static float *fpos(unsigned long e) { return (float *) (e + E_POS); }
-static float *fvel(unsigned long e) { return (float *) (e + E_VEL); }
+static int g_vel_off = E_VEL_DEFAULT;                        /* chosen by the probe when the game proves another offset */
+static float *fvel(unsigned long e) { return (float *) (e + g_vel_off); }
 static float fsize(unsigned long e) { return *(const float *) (e + E_SIZE); }
 
 static unsigned xs(unsigned *s) { unsigned x = *s; x ^= x << 13; x ^= x >> 17; x ^= x << 5; return *s = x; }

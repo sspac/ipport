@@ -292,18 +292,12 @@ static void en_scale(unsigned long e, float sx, float sy) { float *sc = (float *
 /* a walker's step toward (tx,ty): in sight -> straight, else along the breadth-first path (Pathfinder:FindGridPath adds speed along it) */
 static void en_walk_to(unsigned long e, const float *t, float speed_direct, float speed_path, int set) {
     float *p = fpos(e), *v = fvel(e); float wx, wy;
-    /* Pathfinder:FindGridPath(pos, speed, ...) adds `speed` along the way each frame. The Lua writes its own speeds as "speed / 7" .. "speed / 10"
-     * for a wanted px/frame, i.e. the walk settles at about 9 times the number given. Whatever the engine's own damping does, the speed this adds
-     * is never allowed to grow past that (nor past what the monster already had: a lunge is not cut short). */
-    float old = vlen(v[0], v[1]), sp;
     if (en_line_clear(p[0], p[1], t[0], t[1], 0)) {
-        float x = t[0] - p[0], y = t[1] - p[1]; vresize(&x, &y, speed_direct); sp = speed_direct;
-        if (set) { v[0] = x; v[1] = y; return; } else { v[0] += x; v[1] += y; }
+        float x = t[0] - p[0], y = t[1] - p[1]; vresize(&x, &y, speed_direct);
+        if (set) { v[0] = x; v[1] = y; } else { v[0] += x; v[1] += y; }
     } else if (path_step(p[0], p[1], t[0], t[1], 0, &wx, &wy)) {
-        float x = wx - p[0], y = wy - p[1]; vresize(&x, &y, speed_path); sp = speed_path; v[0] += x; v[1] += y;
-    } else return;
-    float lim = sp * 9.0f; if (lim < old) lim = old;
-    if (vlen(v[0], v[1]) > lim) vresize(&v[0], &v[1], lim);
+        float x = wx - p[0], y = wy - p[1]; vresize(&x, &y, speed_path); v[0] += x; v[1] += y;
+    }
 }
 static en_t *en_adopt(unsigned long e) { return e ? en_slot(e) : 0; }
 static unsigned long en_parent_alive(unsigned long ref) {                      /* a monster we hold a pointer to must be in the room's list and alive */
@@ -482,7 +476,12 @@ static void die_pester(en_t *s, unsigned long e) {
 }
 static void ai_eternalfly(en_t *s, unsigned long e) {
     float *p = fpos(e), *v = fvel(e);
-    if (!s->init) { s->init = 1; s->cd = 0; s->i[1] = 0; s->f[1] = s->f[0] ? s->f[0] : (float) rint_(1, 75); ENLOG(13, 2, "ffenemy: not done: Eternal Fly's collision class / flags"); }
+    if (!s->init) {
+        s->init = 1; s->cd = 0; s->i[1] = 0; s->f[1] = s->f[0] ? s->f[0] : (float) rint_(1, 75);
+        en_set_collision(e, ENTCOLL_PLAYEROBJECTS); en_set_gridcoll(e, GRIDCOLL_NONE);                      /* the Lua's d.init */
+        en_flag_clear(e, EF_FLAG_APPEAR); en_flag_set(e, EF_FLAG_NO_STATUS_EFFECTS | EF_FLAG_NO_TARGET);
+        ENLOG(13, 2, "ffenemy: not done: Eternal Fly's TeleportIn/TeleportOut when the parent has an OverlayEffect null, the subtype 1 chase, charm of a friendly parent");
+    }
     en_play(s, "Fly");
     unsigned long par = en_parent_alive(s->ref);
     if (par) {
@@ -494,6 +493,7 @@ static void ai_eternalfly(en_t *s, unsigned long e) {
         if (vlen(dx, dy) > 50.0f) vresize(&dx, &dy, 50.0f);
         v[0] = lerpf(v[0], dx, 0.5f); v[1] = lerpf(v[1], dy, 0.5f);
     } else {
+        en_flag_clear(e, EF_FLAG_NO_STATUS_EFFECTS | EF_FLAG_NO_TARGET);
         unsigned long f = en_spawn(18, 0, p[0], p[1], v[0], v[1], 0, 0);          /* npc:Morph(18, 0, 0, -1) */
         if (f) en_remove(e);
     }
@@ -672,42 +672,46 @@ static void ht_trace(unsigned long e) {       /* at the start of every NPC updat
     }
 }
 static void en_post(en_t *s, unsigned long e, const enemy_t *d, const float *pa, const float *va, const float *vb) {
-    float *p = fpos(e), *v = fvel(e);
-    float mx = p[0] - pa[0], my = p[1] - pa[1], moved = vlen(mx, my), want = vlen(va[0], va[1]);
+    float *p = fpos(e), *v = fvel(e), mx = p[0] - pa[0], my = p[1] - pa[1];
     int gc = ent_gcoll_ok() ? *(const int *) (e + OFF_ENT_GRIDCOLL) : -1, cc = ent_coll_ok() ? *(const int *) (e + OFF_ENT_COLLCLASS) : -1;
+    /* a safety net only, the Lua has nothing like it: a monster that ends up well outside the room's walls (a bug, never a normal move) is put back */
+    if (!d->free_move && g_gw) {
+        float x = p[0], y = p[1]; en_clamp_room(&x, &y, -60.0f);
+        if (x != p[0] || y != p[1]) { ENLOG(19, 24, "ffenemy: %d.%d at (%.0f,%.0f) was far outside the room: put back at (%.0f,%.0f)", s->type, s->variant, p[0], p[1], x, y); p[0] = x; p[1] = y; v[0] = 0; v[1] = 0; }
+    }
     tel_t *t = tel_of(s->type, s->variant);
-    if (t && want > 1.0f && moved >= 0.5f * want) t->good++;          /* the engine does move this kind: it is left alone from the tenth proof on */
-    int ignored = want > 0.5f && moved < 0.05f * want && !s->nocarry && !(t && t->good >= 10), carried = 0;
-    if (ignored) {                                                  /* the engine did not move it: do what Entity::Update would have */
-        float nx = pa[0] + va[0], ny = pa[1] + va[1];
-        int fly = gc != 5;                                          /* GRIDCOLL_GROUND (5) meets rocks and pits too; the others only walls */
-        int grid = gc != 0 && (g_gw || g_grid_class);
-        if (!grid || !en_box(nx, pa[1], fly)) p[0] = nx;
-        if (!grid || !en_box(p[0], ny, fly)) p[1] = ny;
-        carried = 1;
-    }
-    /* the engine's own Update may also throw the velocity away (a friction of 0): then the AI's lerp starts from nothing every frame and the monster
-     * crawls. A kind that, ten times, ended its update with the velocity gone after moving, and never kept it, gets the AI's velocity back. */
-    float veng = vlen(v[0], v[1]);
-    if (t && want > 1.0f && moved >= 0.5f * want) { if (veng >= 0.5f * want) t->kept++; else if (veng < 0.1f * want) t->zeroed++; }
-    if (want > 1.0f && veng < 0.5f * want && !s->nocarry && ((t && t->zeroed >= 10 && t->kept == 0) || ignored)) { v[0] = va[0]; v[1] = va[1]; }
-    if (!d->free_move && g_gw && !s->nocarry) {                       /* a monster that is not meant to leave stays inside the room's walls */
-        float x = p[0], y = p[1]; en_clamp_room(&x, &y, 0.0f);
-        if (x != p[0] || y != p[1]) {
-            ENLOG(19, 24, "ffenemy: %d.%d at (%.0f,%.0f) was outside the room: put back at (%.0f,%.0f)", s->type, s->variant, p[0], p[1], x, y);
-            if (x != p[0]) { v[0] = 0; } if (y != p[1]) { v[1] = 0; }
-            p[0] = x; p[1] = y;
-        }
-    }
     if (t) {
-        t->frames++; if (want > 0.3f) t->moving++; if (ignored) t->ignored++;
-        int moving = want > 0.3f;
+        float want = vlen(va[0], va[1]); int moving = want > 0.3f;
+        t->frames++; if (moving) t->moving++;
         if ((s->age == 3 || (moving && s->age % 12 == 0)) && t->samples < 7) {
             float *pl = en_target(e); t->samples++;
-            LOG("ffenemy: telemetry %d.%d.%d age %d pos (%.0f,%.0f) v0 (%.2f,%.2f) vAI (%.2f,%.2f) moved (%.2f,%.2f) vEng (%.2f,%.2f) player (%.0f,%.0f) st %d anim %s/%d gc %d cc %d carried %d",
-                s->type, s->variant, s->sub, s->age, pa[0], pa[1], vb[0], vb[1], va[0], va[1], mx, my, v[0], v[1], pl ? pl[0] : -1.0f, pl ? pl[1] : -1.0f, s->state, s->anim, s->af, gc, cc, carried);
+            LOG("ffenemy: telemetry %d.%d.%d age %d pos (%.0f,%.0f) v0 (%.2f,%.2f) vAI (%.2f,%.2f) moved (%.2f,%.2f) vEng (%.2f,%.2f) player (%.0f,%.0f) st %d anim %s/%d gc %d cc %d velo +0x%x",
+                s->type, s->variant, s->sub, s->age, pa[0], pa[1], vb[0], vb[1], va[0], va[1], mx, my, v[0], v[1], pl ? pl[0] : -1.0f, pl ? pl[1] : -1.0f, s->state, s->anim, s->af, gc, cc, g_vel_off);
         }
-        if (t->frames % 300 == 0 && t->sums < 4) { t->sums++; LOG("ffenemy: telemetry summary %d.%d: %d frames, %d with the AI moving it, %d where the engine ignored the velocity, velocity kept %d / thrown away %d times", s->type, s->variant, t->frames, t->moving, t->ignored, t->kept, t->zeroed); }
+    }
+}
+/* ---- velocity probe. The offset of the engine's Velocity was taken as +0x320 and was wrong (ff-codigo42's log: a hit moved a monster 8 px/frame with
+ * "velocity 0.00"; vanilla monsters carry 1e-20 leftovers of friction at +0x334/+0x338, and the engine's movement-direction and wall code read that pair).
+ * The default is now +0x334. This checks it against what vanilla monsters really do: on each update the distance a vanilla NPC just travelled must
+ * be about the speed stored at the offset. Only if the other offset wins clearly (never the case in the log) is it switched, and the log says so. */
+typedef struct { unsigned long e; float x, y; } vp_t;
+static vp_t g_vp[16]; static int g_vp_a, g_vp_b, g_vp_n, g_vp_done;
+static void vel_probe(unsigned long e) {
+    if (g_vp_done) return;
+    vp_t *slot = 0;
+    for (int i = 0; i < 16; i++) if (g_vp[i].e == e) { slot = &g_vp[i]; break; }
+    if (!slot) { for (int i = 0; i < 16; i++) if (!g_vp[i].e) { slot = &g_vp[i]; break; } if (!slot) slot = &g_vp[(unsigned) (e >> 4) & 15]; slot->e = e; slot->x = fpos(e)[0]; slot->y = fpos(e)[1]; return; }
+    float dx = fpos(e)[0] - slot->x, dy = fpos(e)[1] - slot->y, dl = vlen(dx, dy); slot->x = fpos(e)[0]; slot->y = fpos(e)[1];
+    if (dl < 1.5f || dl > 40.0f) return;
+    const float *a = (const float *) (e + 0x334), *b = (const float *) (e + 0x320);
+    float la = vlen(a[0], a[1]), lb = vlen(b[0], b[1]);
+    g_vp_n++;
+    if (la > 0.6f * dl && la < 1.6f * dl) g_vp_a++;
+    if (lb > 0.6f * dl && lb < 1.6f * dl) g_vp_b++;
+    if (g_vp_n >= 60) {
+        g_vp_done = 1;
+        LOG("ffenemy: velocity probe over %d vanilla steps: +0x334 matched %d, +0x320 matched %d (the code uses +0x%x)", g_vp_n, g_vp_a, g_vp_b, g_vel_off);
+        if (g_vp_b >= 15 && g_vp_a * 4 < g_vp_b) { g_vel_off = 0x320; LOG("ffenemy: velocity probe: +0x320 wins clearly, switched"); }
     }
 }
 static void w_npc_update(unsigned long e) {
@@ -715,7 +719,7 @@ static void w_npc_update(unsigned long e) {
     const enemy_t *d = g_en_on ? en_find(type, *(const int *) (e + E_VARIANT)) : 0;      /* e is the engine's own pointer */
     en_t *s = 0; float pa[2] = { 0, 0 }, va[2] = { 0, 0 }, vb[2] = { 0, 0 };
     ht_trace(e);
-    if (*(const unsigned char *) (e + E_EXISTS)) en_dump(e, d == 0);
+    if (*(const unsigned char *) (e + E_EXISTS)) { en_dump(e, d == 0); if (!d) vel_probe(e); }
     if (d && *(const unsigned char *) (e + E_EXISTS)) {
         s = en_slot(e);
         s->af++; if (s->ov[0]) s->ovf++;
