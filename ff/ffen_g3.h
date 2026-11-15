@@ -233,14 +233,20 @@ static void ai_weaver(en_t *s, unsigned long e) {
         return;
     }
     wv_t *w = wv_get(e, 1); if (!w) return;
-    if (!s->init) { s->init = 1; s->cd = -10; s->state = 0; w->n = 0; ENLOG(30, 1, "ffenemy: not done: Weaver SpriteOffset hop arc / alpha fade, Visible toggling, dirt pile effects (1000.146), approximated orbit seeds"); } else s->cd++;
+    if (!s->init) { s->init = 1; s->cd = -10; s->state = 0; w->n = 0; ENLOG(30, 1, "ffenemy: not done: Weaver SpriteOffset hop arc / alpha fade, Visible toggling, weaver.anm2 loaded over the dirt pile (the engine's own 1000.146 art is used), approximated orbit seeds"); } else s->cd++;
     float tx = t[0], ty = t[1]; weaver_orbit(e, &tx, &ty, s->state == 0);
     float x = tx - p[0], y = ty - p[1]; vresize(&x, &y, speed); if (en_scared(e)) { x = -x; y = -y; }
     v[0] = lerpf(v[0], x, lerpv); v[1] = lerpf(v[1], y, lerpv);
     if (s->state == 0) {
         en_play(s, "Empty"); en_set_gridcoll(e, GRIDCOLL_WALLS); en_set_collision(e, ENTCOLL_NONE);
-        if (s->cd > groundtime && en_tile(p[0], p[1]) == 0) {
+        if (!s->i[2]) { s->i[2] = 1; s->f[2] = p[0]; s->f[3] = p[1] + 20.0f; }                    /* d.lastcreepleft = d.lastcreepleft or pos + (0,20) */
+        if (vlen(s->f[2] - p[0], s->f[3] - p[1]) > 15.0f && s->age > 0) {
+            if (en_tile(p[0], p[1]) == 0) en_spawn(1000, 146, p[0], p[1], 0, 0, e, 0);              /* the dirt trail */
+            s->f[2] = p[0]; s->f[3] = p[1];
+        }
+        if (s->cd > groundtime && en_tile(p[0], p[1]) == 0 && en_in_room_walk(p[0], p[1], 15.0f)) {
             en_sound(SOUND_MAGGOT_BURST_OUT, 0.3f, 1.3f + (float) rint_(1, 3) / 10.0f);
+            en_spawn(1000, 146, p[0], p[1], 0, 0, e, 0); s->i[2] = 0;                              /* the pile where it surfaces */
             s->state = 1; s->i[0] = rint_(1, 15) == 1 ? 2 : 1; s->cd = 0;
         }
     } else {
@@ -248,7 +254,7 @@ static void ai_weaver(en_t *s, unsigned long e) {
         float curve = 0.0f - sinf(0.2f * (float) s->cd / curvar) * 20.0f; int coll = en_tile(p[0], p[1]);
         if (s->cd > curframe && coll >= 2) { s->cd = curframe; s->i[1] = 1; }
         s->f[0] = curve; en_set_collision(e, curve <= -25.0f ? ENTCOLL_NONE : ENTCOLL_ALL);
-        if (s->cd > curframe + 2) { en_sound(SOUND_MAGGOT_ENTER_GROUND, 0.3f, 1.3f + (float) rint_(1, 3) / 10.0f); s->state = 0; s->cd = 0; }
+        if (s->cd > curframe + 2) { en_spawn(1000, 146, p[0], p[1], 0, 0, e, 0); en_sound(SOUND_MAGGOT_ENTER_GROUND, 0.3f, 1.3f + (float) rint_(1, 3) / 10.0f); s->state = 0; s->cd = 0; }
     }
     float offe = s->i[1] ? 0.0f : ((float) s->cd - 7.5f) * -0.5f;
     memmove(&w->h[1], &w->h[0], sizeof w->h[0] * (WV_HIST - 1)); if (w->n < WV_HIST) w->n++;
@@ -268,8 +274,8 @@ static void ai_weaver(en_t *s, unsigned long e) {
  *      urn list is measured here, so it stays on its spot (the "no other urn" case) and the "urn is gone -> Remove" checks are skipped. s->state 0 idle 1 burrow 2 emerge 3 spew; cd = StateFrame; i[0] = leavecreep ---- */
 static void ai_tap(en_t *s, unsigned long e) {
     float *p = fpos(e);
-    if (!s->init) { s->init = 1; s->state = 0; s->cd = -1; en_set_collision(e, ENTCOLL_NONE);
-        ENLOG(31, 1, "ffenemy: not done: Tap urn grid entity (SpawnGridEntity/GetUnoccupiedPot not measured: it never moves to another urn), looping TapLoop sound, creep Timeout 40, SpriteOffset(-1,-11), no-knockback flags"); } else s->cd++;
+    if (!s->init) { s->init = 1; s->state = 0; s->cd = -1; en_set_collision(e, ENTCOLL_NONE); en_flag_set(e, EF_FLAG_NO_PHYSICS_KNOCKBACK | EF_FLAG_NO_KNOCKBACK);
+        ENLOG(31, 1, "ffenemy: not done: Tap urn grid entity (SpawnGridEntity/GetUnoccupiedPot not measured: it never moves to another urn), looping TapLoop sound, creep Timeout 40, SpriteOffset(-1,-11)"); } else s->cd++;
     if (en_event(s, s->anim, "Place")) en_sound(FFSND_TapTap, 0.3f, (float) rint_(90, 100) / 100.0f);
     if (s->state == 0) {
         en_play(s, "Idle");
@@ -292,10 +298,104 @@ static void ai_tap(en_t *s, unsigned long e) {
         en_spawn(1000, 22, p[0] + x, p[1] + y, 0, 0, e, 0);
     }
 }
+
+/* ---- Drink Worm 666.100 (mini/enemies/drink_worm.lua drinkwormai + drinkwormfindpos). It never moves: it digs in (diginspit spits a floating bullet), stays burrowed 15-30 ticks,
+ *      digs out at a random cell, and sucks its own bullet back in. s->state 0 idle 1 burrow 2 suck; cd = idletimer; i[0] = burrowedtimer, i[1] = firstdig, i[2] = extraVariableToFixABug;
+ *      f[0..1] = TargetPosition; ref = the projectile it keeps ---- */
+static int dw_blocked_line(float x0, float y0, float x1, float y1) {                       /* Room:CheckLine(a, b, 3): walls and rocks block, pits do not */
+    float dx = x1 - x0, dy = y1 - y0, d = vlen(dx, dy); int steps = (int) (d / 10.0f) + 1;
+    for (int k = 1; k < steps; k++) if (fb_blocked(x0 + dx * k / steps, y0 + dy * k / steps)) return 1;
+    return 0;
+}
+static int dw_clear_of_players(float x, float y, float dist, unsigned long pl) {         /* mod:checkposdistancefroment(pos, 1, -1, dist) */
+    if (!pl) return 1;
+    const float *pp = fpos(pl), *pv = fvel(pl);
+    return vlen(x - pp[0], y - pp[1]) >= dist && vlen(x - (pp[0] + pv[0] * 8.0f), y - (pp[1] + pv[1] * 8.0f)) >= dist;
+}
+static void dw_findpos(const en_t *s, unsigned long e, unsigned long pl, unsigned long proj, float *ox, float *oy) {
+    int w = g_gw ? (int) g_gw : 15, h = g_gh ? (int) g_gh : 9; int n = 0; float cx[15 * 9 + 16], cy[15 * 9 + 16];
+    (void) s; (void) e;
+    for (int r = 0; r < h; r++) for (int c = 0; c < w; c++) {
+        float x = en_room_x(c), y = en_room_y(r);
+        if (en_xy(x, y, 0) || !en_in_room_walk(x, y, 15.0f)) continue;                   /* a free tile inside the room */
+        if (!dw_clear_of_players(x, y, 100.0f, pl)) continue;
+        int near_worm = 0;
+        for (int k = 0; k < EN_N; k++) if (g_en[k].e && g_en[k].type == 666 && g_en[k].variant == 100 && alive(g_en[k].e) && vlen(x - fpos(g_en[k].e)[0], y - fpos(g_en[k].e)[1]) < 40.0f) near_worm = 1;
+        if (near_worm) continue;                                                            /* (the worm itself counts: its own cell is never chosen) */
+        if (proj) { const float *q = fpos(proj); if (dw_blocked_line(x, y, q[0], q[1]) || vlen(x - q[0], y - q[1]) <= 80.0f) continue; }
+        if (n < (int) (sizeof cx / sizeof cx[0])) { cx[n] = x; cy[n] = y; n++; }
+    }
+    if (!n) { *ox = fpos(e)[0]; *oy = fpos(e)[1]; return; }
+    int k = (int) rnd((unsigned) n); *ox = cx[k]; *oy = cy[k];
+}
+static void dw_findpos_first(unsigned long e, unsigned long pl, float *ox, float *oy) {   /* mod:FindRandomValidPathPosition(npc, 2, 120): a free cell 120+ from the player, 150+ from the worm if any */
+    int w = g_gw ? (int) g_gw : 15, h = g_gh ? (int) g_gh : 9; int n = 0, nf = 0; float cx[15 * 9 + 16], cy[15 * 9 + 16], fx[15 * 9 + 16], fy[15 * 9 + 16]; const float *p = fpos(e);
+    for (int r = 0; r < h; r++) for (int c = 0; c < w; c++) {
+        float x = en_room_x(c), y = en_room_y(r);
+        if (en_xy(x, y, 0) || !en_in_room_walk(x, y, 0.0f)) continue;
+        if (pl && vlen(x - fpos(pl)[0], y - fpos(pl)[1]) < 120.0f) continue;
+        if (n < (int) (sizeof cx / sizeof cx[0])) { cx[n] = x; cy[n] = y; n++; }
+        if (vlen(x - p[0], y - p[1]) > 150.0f && nf < (int) (sizeof fx / sizeof fx[0])) { fx[nf] = x; fy[nf] = y; nf++; }
+    }
+    if (nf) { int k = (int) rnd((unsigned) nf); *ox = fx[k]; *oy = fy[k]; }
+    else if (n) { int k = (int) rnd((unsigned) n); *ox = cx[k]; *oy = cy[k]; }
+    else { *ox = p[0]; *oy = p[1]; }
+}
+static void ai_drinkworm(en_t *s, unsigned long e) {
+    float *p = fpos(e), *v = fvel(e); unsigned long pl = g_first_player();
+    if (!s->init) {
+        s->init = 1; en_flag_set(e, EF_FLAG_NO_PHYSICS_KNOCKBACK); s->state = 0; s->cd = rint_(15, 30); s->i[0] = 0; s->i[1] = 0; s->i[2] = 0; s->f[0] = p[0]; s->f[1] = p[1];
+        ENLOG(32, 1, "ffenemy: not done: Drink Worm's Clod hop (TryEnterClod: Clod is not in the port), campfire check, dirt colour, charmed projectile");
+    }
+    p[0] = s->f[0]; p[1] = s->f[1]; v[0] = 0; v[1] = 0;                                    /* npc.Position = npc.TargetPosition; Velocity = 0 */
+    unsigned long pr = s->ref;
+    if (pr && !(fb_is(pr, 9, 0) && alive(pr))) { pr = 0; s->ref = 0; }
+    if (s->state == 0) {
+        if (s->cd > 0) { s->cd--; en_play(s, "idle"); }
+        else if (!pr) {
+            if (s->i[1]) en_play(s, "diginspit"); else { en_play(s, "diginspitless"); s->i[1] = 1; s->i[2] = 1; }
+            s->state = 1;
+        } else { en_sound(SOUND_MAGGOTCHARGE, 1.0f, 1.5f); en_play(s, "startsuckinboy"); s->state = 2; }
+    } else if (s->state == 1) {
+        if (en_finished(s, "diginspit") || en_finished(s, "diginspitless")) { s->i[0] = rint_(15, 30); en_set_collision(e, ENTCOLL_NONE); en_play(s, "burrowed"); }
+        else if (en_finished(s, "digout")) { en_play(s, "idle"); s->cd = rint_(20, 40); s->state = 0; }
+        else if (!(en_playing(s, "diginspit") || en_playing(s, "digout") || en_playing(s, "diginspitless"))) {
+            if (s->i[0] <= 0) {
+                en_play(s, "digout"); en_set_collision(e, ENTCOLL_ALL);
+                if (s->i[2]) { dw_findpos_first(e, pl, &s->f[0], &s->f[1]); s->i[2] = 0; }
+                else dw_findpos(s, e, pl, pr, &s->f[0], &s->f[1]);
+                if (pr) { const float *q = fpos(pr); if (en_flipped(e) && q[0] < p[0]) en_flip(e, 0); else if (q[0] > p[0]) en_flip(e, 1); }
+            } else s->i[0]--;
+        }
+    } else {
+        if (en_finished(s, "startsuckinboy")) en_play(s, "suck");
+        else if (en_finished(s, "stopsuck")) { en_play(s, "idle"); s->cd = rint_(30, 45); s->state = 0; }
+        else if (en_finished(s, "catchbullet")) { en_play(s, "diginspit"); s->state = 1; }
+        else if (pr) {
+            float *q = fpos(pr), *qv = fvel(pr); float dx = p[0] - q[0], dy = p[1] - q[1];
+            if (vlen(dx, dy) <= 10.0f) { en_remove(pr); s->ref = 0; pr = 0; en_play(s, "catchbullet"); en_sound(SOUND_LITTLE_SPIT, 0.75f, 3.0f); }
+            else { vresize(&dx, &dy, 15.0f); qv[0] = lerpf(qv[0], dx, 0.075f); qv[1] = lerpf(qv[1], dy, 0.075f); }
+        } else if (!en_playing(s, "catchbullet")) en_play(s, "stopsuck");
+    }
+    if (en_event(s, s->anim, "spit")) {
+        en_sound(SOUND_PLOP, 0.4f, 2.0f);
+        pr = en_spawn(9, 0, p[0], p[1], 0, 0, e, 0); s->ref = pr;
+        if (pr) { if (proj_fspeed_ok()) *(float *) (pr + OFF_PROJ_FALLINGSPEED) = -3.0f; if (proj_faccel_ok()) *(float *) (pr + OFF_PROJ_FALLINGACCEL) = -0.1f; }
+    }
+    if (pr && proj_faccel_ok() && proj_fspeed_ok()) {
+        float *fa = (float *) (pr + OFF_PROJ_FALLINGACCEL), fsp = *(const float *) (pr + OFF_PROJ_FALLINGSPEED); const float *q = fpos(pr);
+        int scared = en_scared(e) || en_confused(e);
+        if (*fa >= 0.15f && fsp >= 0.0f && !scared) *fa = -0.1f;
+        if (fb_blocked(q[0], q[1]) || !alive(pr)) { s->ref = 0; pr = 0; }              /* CollidesWithGrid() or IsDead(): it is no longer ours */
+        if (pr && (en_dead(e) || scared)) *fa = 1.0f;                                      /* let it fall */
+    }
+}
+
 static const enemy_t g_tab_g3[] = {
     { 160, 820, ai_slim, die_slim, 0, 0 },
     { 160, 760, ai_bowler, 0, hurt_bowler, 0 },
     { 155, 0, ai_weaver, 0, 0, 0, 1 },
     { 160, 490, ai_tap, 0, 0, 1 },
+    { 666, 100, ai_drinkworm, 0, 0, 0, 1 },
 };
 #define N_TAB_G3 ((int) (sizeof g_tab_g3 / sizeof g_tab_g3[0]))

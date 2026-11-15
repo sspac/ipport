@@ -122,17 +122,18 @@ static unsigned long en_shoot_p(unsigned long e, float x, float y, float vx, flo
 
 
 /* more sprite pieces: SetFrame 0x89eab8 / SetOverlayFrame 0x89ee7c (measured: both call the same inner setter on the main (+0x30) / overlay (+0x60) animation state),
- * the overlay's own frame counter, and FlipX. FlipX is NOT measured: it is emulated by the sign of SpriteScale.x (sprite +0xdc), logged once. */
+ * the overlay's own frame counter, and FlipX (below). */
 static void en_set_frame(en_t *s, const char *name, int frame) { s->af = frame; strncpy(s->anim, name, sizeof s->anim - 1); if (g_setframe) g_setframe((void *) (s->e + E_SPRITE), name, frame); }
 static fn_setframe g_setoframe;
 static void en_set_overlay_frame(unsigned long e, const char *name, int frame) { if (g_setoframe) g_setoframe((void *) (e + E_SPRITE), name, frame); }   /* null in the host tests */
 static void en_overlay(en_t *s, const char *name) { if (strcmp(s->ov, name)) { strncpy(s->ov, name, sizeof s->ov - 1); s->ovf = 0; g_overlay((void *) (s->e + E_SPRITE), name, 1); } }
 static void en_overlay_off(en_t *s) { if (s->ov[0]) { s->ov[0] = 0; g_remove_overlay((void *) (s->e + E_SPRITE)); } }
 static int en_overlay_finished(const en_t *s, const char *name) { const ffa_t *a = ffa_find(s->key, name); return a && !strcmp(s->ov, name) && !a->loop && s->ovf >= a->len; }
-static void en_flip(unsigned long e, int flip) {
-    float *sc = (float *) (e + E_SPRITE + 0xdc); float ax = fabsf(sc[0]); sc[0] = flip ? -ax : ax;
-    ENLOG(17, 1, "ffenemy: FlipX is emulated by the sign of the sprite's scale X (the real field is not measured)");
-}
+/* FlipX: measured. Vanilla NPC code that plays WalkHori does `sprite.Play(name); *(u8 *)(npc + 0x190) = (velocity.x < 0)` (7 sites: 0x6025f4, 0x6a9c84,
+ * 0x7b9640, 0x803bd8, 0x804090, 0x80d360, 0x8849bc), so Sprite::FlipX is the byte at sprite + 0x140 (= entity + 0x190); 1 = mirrored, i.e. facing left. */
+#define E_FLIPX 0x190
+static void en_flip(unsigned long e, int flip) { *(unsigned char *) (e + E_FLIPX) = flip ? 1 : 0; }
+static int en_flipped(unsigned long e) { return *(unsigned char *) (e + E_FLIPX) != 0; }
 
 static float *en_target(unsigned long e) { unsigned long p = g_first_player(); (void) e; return p ? fpos(p) : 0; }
 static unsigned long en_spawn(int type, int variant, float x, float y, float vx, float vy, unsigned long spawner, int sub) {
@@ -252,7 +253,7 @@ static void ai_slobber(en_t *s, unsigned long e) {
             en_pp_t pp; memset(&pp, 0, sizeof pp); pp.vel_multi = 7.0f;       /* 9 on Hard/Greedier (Difficulty % 2 == 1): the difficulty is not read here, normal assumed */
             unsigned long ef = en_spawn(1000, 2, p[0], p[1], 0, 0, e, 5);
             (void) ef;
-            ENLOG(16, 3, "ffenemy: not done: Slobber's mouth effect SpriteOffset/DepthOffset/Color/FollowParent, sprite FlipX");
+            ENLOG(16, 3, "ffenemy: not done: Slobber's mouth effect SpriteOffset/DepthOffset/Color/FollowParent");
             if (s->variant == 2100) pp.variant = 4;
             if (s->variant == 2101 && s->af >= 36) { pp.has_scale = 1; pp.scale = 1.4f; }
             en_shoot_p(e, p[0], p[1], x, y, &pp);
@@ -319,7 +320,7 @@ static void ai_buttfly(en_t *s, unsigned long e) {
         int d = (s->sub == 0 || s->sub > 4) ? rint_(1, 4) : s->sub;
         s->f[0] = dx[d - 1]; s->f[1] = dy[d - 1]; s->cd = rint_(15, 30); s->state = 0; s->init = 1;
         en_play(s, "Appear");
-        ENLOG(8, 2, "ffenemy: not done: Butt Fly's no-knockback flags");
+        en_flag_set(e, EF_FLAG_NO_KNOCKBACK | EF_FLAG_NO_PHYSICS_KNOCKBACK);                  /* the Lua's d.init */
     }
     if (s->state == 0) {
         if (en_finished(s, "Appear")) { v[0] = s->f[0]; v[1] = s->f[1]; en_play(s, "Fly"); }
@@ -357,14 +358,15 @@ static void shotfly_child(unsigned long parent, float x, float y, float vx, floa
     if (force) { cs->f[4] = vx; cs->f[5] = vy; cs->f[0] = vx; }
     else { cs->f[2] = vx; cs->f[3] = vy; }
     en_replay(cs, anim);
-    *(unsigned long long *) (c + E_FLAGS) &= ~0x20000000ull;
+    en_flag_clear(c, EF_FLAG_APPEAR); en_flag_set(c, EF_FLAG_NO_PHYSICS_KNOCKBACK | EF_FLAG_NO_KNOCKBACK); en_set_collision(c, ENTCOLL_PLAYEROBJECTS);
 }
 static void ai_shotfly(en_t *s, unsigned long e) {
     float *p = fpos(e), *v = fvel(e), *t = en_target(e); if (!t) return;
     int shoter = s->variant == 24;
     if (!s->init) {
         s->init = 1; en_play(s, "Fly");
-        ENLOG(10, 2, "ffenemy: not done: Shot Fly's collision class / no-knockback flags and the wait-then-descend subtype");
+        if (s->state == 2 || s->i[1]) { en_flag_set(e, EF_FLAG_NO_PHYSICS_KNOCKBACK); en_set_collision(e, ENTCOLL_PLAYEROBJECTS); }      /* data.Charging / ForceVec */
+        ENLOG(10, 2, "ffenemy: not done: Shot Fly's wait-then-descend subtype (data.waited)");
     }
     if (s->state == 2) {                                                       /* charging */
         if (!s->i[3]) { s->i[3] = 1; en_sound(FFSND_Ricochet, 0.7f, 0.8f); }
@@ -385,6 +387,7 @@ static void ai_shotfly(en_t *s, unsigned long e) {
             float margin = shoter ? 40.0f : 20.0f;
             if (fabsf(p[0] - t[0]) < margin) { en_replay(s, "ChargeStartVerti"); s->state = 1; }
             else if (fabsf(p[1] - t[1]) < margin) { en_replay(s, "ChargeStartHori"); s->state = 1; }
+            if (s->state == 1) { en_flag_set(e, EF_FLAG_NO_PHYSICS_KNOCKBACK | EF_FLAG_NO_KNOCKBACK); en_set_collision(e, ENTCOLL_PLAYEROBJECTS); }      /* shotfly.lua 112 */
         }
         v[0] = lerpf(v[0], tx, 0.3f); v[1] = lerpf(v[1], ty, 0.3f);
         return;
@@ -412,6 +415,7 @@ static void die_shotfly(en_t *s, unsigned long e) {
             en_t *cs = en_adopt(c); if (!cs) continue;
             cs->init = 1; cs->state = 1; cs->i[0] = 1; cs->i[1] = 1; cs->f[4] = fx; cs->f[5] = fy;
             en_replay(cs, "ChargeStartHori");
+            en_flag_clear(c, EF_FLAG_APPEAR); en_flag_set(c, EF_FLAG_NO_PHYSICS_KNOCKBACK | EF_FLAG_NO_KNOCKBACK); en_set_collision(c, ENTCOLL_PLAYEROBJECTS);
         }
     } else en_spawn(1000, 3, p[0], p[1], 0, 0, e, 0);
 }
@@ -545,6 +549,8 @@ static int en_in_room(float x, float y, float margin) {
     int w = g_gw ? (int) g_gw : 15, h = g_gh ? (int) g_gh : 9;
     return x > en_room_x(0) - 20.0f + margin && x < en_room_x(w - 1) + 20.0f - margin && y > en_room_y(0) - 20.0f + margin && y < en_room_y(h - 1) + 20.0f - margin;
 }
+/* Room:IsPositionInRoom(pos, margin): inside the walls' inner edge, margin px in (the same rectangle Room:GetClampedPosition uses) */
+static int en_in_room_walk(float x, float y, float margin) { float cx = x, cy = y; en_clamp_room(&cx, &cy, margin); return cx == x && cy == y; }
 static void en_rand_vec(float *x, float *y, float len) { float a = frand() * 6.2831853f; *x = cosf(a) * len; *y = sinf(a) * len; }
 /* npc:Morph(type, variant, subtype, -1): the engine's in-place type change is not available, so the new monster is spawned where the old one is and the old one removed */
 static unsigned long en_morph(unsigned long e, int type, int variant, int sub) {
@@ -714,6 +720,26 @@ static void vel_probe(unsigned long e) {
         if (g_vp_b >= 15 && g_vp_a * 4 < g_vp_b) { g_vel_off = 0x320; LOG("ffenemy: velocity probe: +0x320 wins clearly, switched"); }
     }
 }
+/* Sprite animation of the port's monsters. Measured in the binary: Sprite::Update = 0x89d598(sprite) runs the main (+0x30) and overlay (+0x60) animation states
+ * through 0x89d488, which adds the playback speed to the float frame at state+0x20 (= entity +0xa0) while the byte state+0x24 (= entity +0xa4, set by Sprite::Play,
+ * cleared by SetFrame and when a non-looping animation ends) is set. NPC::Update (0x68bd3c) never calls it for the main sprite: every vanilla monster's own AI
+ * does (100+ call sites). A port monster of a type/variant with no vanilla AI therefore stood on frame 0 (Square Fly, Shot Fly, Butt Fly, Poobottle ... in the
+ * 23rd log's videos) because the Lua's sprite:Play only starts the animation, the engine's update of the Lua-driven monsters is what advances it.
+ * So after the engine's update, a port monster whose animation is playing and whose frame did not move gets exactly one Sprite::Update. Frame-pinned monsters
+ * (SetFrame every tick, byte cleared) and monsters whose vanilla AI already updated the sprite are left alone, so nothing runs twice. */
+#define E_SPR_FRAME 0xa0
+#define E_SPR_PLAYING 0xa4
+typedef void (*fn_sprupd)(void *);
+static fn_sprupd g_sprupd;                                       /* null in the host tests unless a test installs a mock */
+static unsigned char g_spr_logged[256];
+static void en_sprite_tick(unsigned long e, float frame_before) {
+    if (!g_sprupd) return;
+    if (!*(const unsigned char *) (e + E_SPR_PLAYING)) return;
+    if (*(const float *) (e + E_SPR_FRAME) != frame_before) return;
+    g_sprupd((void *) (e + E_SPRITE));
+    int k = (*(const int *) (e + E_TYPE) * 7 + *(const int *) (e + E_VARIANT)) & 255;
+    if (!g_spr_logged[k]) { g_spr_logged[k] = 1; LOG("ffenemy: %d.%d: the engine did not advance the sprite, Sprite::Update is called by the port", *(const int *) (e + E_TYPE), *(const int *) (e + E_VARIANT)); }
+}
 static void w_npc_update(unsigned long e) {
     int type = *(const int *) (e + E_TYPE);
     const enemy_t *d = g_en_on ? en_find(type, *(const int *) (e + E_VARIANT)) : 0;      /* e is the engine's own pointer */
@@ -735,7 +761,9 @@ static void w_npc_update(unsigned long e) {
         if (s) { s->age++; pa[0] = fpos(e)[0]; pa[1] = fpos(e)[1]; va[0] = fvel(e)[0]; va[1] = fvel(e)[1]; }
         (void) x0; (void) y0;
     }
+    float fb = *(const float *) (e + E_SPR_FRAME);
     o_npc_update(e);
+    if (d && *(const unsigned char *) (e + E_EXISTS)) en_sprite_tick(e, fb);
     if (s && d && *(const unsigned char *) (e + E_EXISTS) && s->e == e) en_post(s, e, d, pa, va, vb);
     if ((g_ensweep++ & 255) == 0) en_sweep();
 }

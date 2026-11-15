@@ -192,7 +192,7 @@ static void hurt_tallboi(en_t *s, unsigned long e, float dmg) { (void) e; (void)
 /* ---- Shitling 160.501 (tallboi.lua shitlingAI): state 0 idle, 1 spit ---- */
 static void ai_shitling(en_t *s, unsigned long e) {
     float *p = fpos(e), *v = fvel(e), *t = en_target(e); if (!t) return;
-    if (!s->init) { s->init = 1; s->state = 0; ENLOG(23, 1, "ffenemy: not done: Shitling's no-knockback flags (flag bits not measured)"); } else { s->cd++; v[0] = v[1] = 0; }
+    if (!s->init) { s->init = 1; s->state = 0; en_flag_set(e, EF_FLAG_NO_PHYSICS_KNOCKBACK | EF_FLAG_NO_KNOCKBACK); } else { s->cd++; v[0] = v[1] = 0; }
     if (t[0] > p[0] + 40.0f) en_flip(e, 0); else if (t[0] < p[0] - 40.0f) en_flip(e, 1);
     if (en_event(s, s->anim, "spit")) {
         en_sound(SOUND_LITTLE_SPIT, 1.0f, 1.3f);
