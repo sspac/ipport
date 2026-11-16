@@ -14,14 +14,17 @@
  */
 #include "ffanim_table.h"
 
-static int g_enlog[64], g_ensweep;
+static int g_enlog[200], g_ensweep;
 #define ENLOG(k, n, ...) do { if (g_enlog[k]++ < (n)) LOG(__VA_ARGS__); } while (0)
 #define EN_N 96
 typedef struct {
     unsigned long e; unsigned key; int type, variant, sub;
     int init, age, state, cd, cd2, af, dead_done, dir;
     char anim[32], ov[32]; int alen, aloop, ovf;
-    float f[6]; int i[6]; unsigned long ref, ref2; int nocarry;
+    float f[12]; int i[12]; unsigned long ref, ref2, ref3; int nocarry, hurt_block;
+    float po[2]; int la_on, la_hasvel; float la_z, la_acc, la_h, la_vx, la_vy, la_col;   /* Entity.PositionOffset the AI asked for (added to the SpriteOffset) and the launched-enemy state (ferrium/misc/launchedStuff.lua) */
+    float so[2]; int so_on;                                               /* the SpriteOffset the AI asked for, re-applied after the engine's update */
+    float lastreal; int stuck, driven;                                   /* en_sprite_sync: the engine's own frame last tick, how long it has not moved, and whether the port sets the frame itself */
 } en_t;
 static en_t g_en[EN_N];
 static int g_en_on = 1;
@@ -97,6 +100,20 @@ EN_FIELD(ent_child, OFF_ENT_CHILD) EN_FIELD(ent_spriteoff, OFF_ENT_SPRITEOFFSET)
 EN_FIELD(proj_height, OFF_PROJ_HEIGHT) EN_FIELD(proj_fspeed, OFF_PROJ_FALLINGSPEED) EN_FIELD(proj_faccel, OFF_PROJ_FALLINGACCEL) EN_FIELD(proj_flags, OFF_PROJ_FLAGS)
 EN_FIELD(proj_scale, OFF_PROJ_SCALE) EN_FIELD(proj_curving, OFF_PROJ_CURVING) EN_FIELD(proj_homing, OFF_PROJ_HOMING)
 EN_FIELD(eff_timeout, OFF_EFF_TIMEOUT) EN_FIELD(eff_lifespan, OFF_EFF_LIFESPAN) EN_FIELD(eff_scale, OFF_EFF_SCALE)
+/* npc.SpriteOffset = Vector(x, y): the sprite moves, the shadow and the hitbox stay. Written now and again after the engine's update (see w_npc_update). */
+static void en_apply_offsets(en_t *s, unsigned long e) {
+    if (!ent_spriteoff_ok()) return;
+    *(float *) (e + OFF_ENT_SPRITEOFFSET) = s->so[0] + s->po[0]; *(float *) (e + OFF_ENT_SPRITEOFFSET + 4) = s->so[1] + s->po[1];
+}
+static void en_sprite_offset(en_t *s, unsigned long e, float x, float y) {
+    if (!ent_spriteoff_ok()) return;
+    s->so[0] = x; s->so[1] = y; s->so_on = 1; en_apply_offsets(s, e);
+}
+/* npc.PositionOffset: the engine draws the sprite at Position + the vector at +0x320, which both the vanilla hoppers' jump height and the Lua's SpriteOffset move;
+ * the port has one vector, so the two are kept apart here and their sum is written. */
+static void en_position_offset(en_t *s, unsigned long e, float x, float y) { s->po[0] = x; s->po[1] = y; s->so_on = 1; en_apply_offsets(s, e); }
+/* Sprite.Offset (sprite + 0xd4, measured): the sprite's own offset, kept by the sprite itself */
+static void en_spr_off(unsigned long e, float x, float y) { float *o = (float *) (e + E_SPRITE + 0xd4); o[0] = x; o[1] = y; }
 static int  en_get_state(unsigned long e) { return npc_state_ok() ? *(int *) (e + OFF_NPC_STATE) : 0; }
 static void en_set_state(unsigned long e, int v) { if (npc_state_ok()) *(int *) (e + OFF_NPC_STATE) = v; }
 static int  en_get_statef(unsigned long e) { return npc_statef_ok() ? *(int *) (e + OFF_NPC_STATEFRAME) : 0; }
@@ -132,8 +149,12 @@ static int en_overlay_finished(const en_t *s, const char *name) { const ffa_t *a
 /* FlipX: measured. Vanilla NPC code that plays WalkHori does `sprite.Play(name); *(u8 *)(npc + 0x190) = (velocity.x < 0)` (7 sites: 0x6025f4, 0x6a9c84,
  * 0x7b9640, 0x803bd8, 0x804090, 0x80d360, 0x8849bc), so Sprite::FlipX is the byte at sprite + 0x140 (= entity + 0x190); 1 = mirrored, i.e. facing left. */
 #define E_FLIPX 0x190
+#define E_SPR_FRAME 0xa0                                          /* the main animation state's current frame (float), measured */
+#define E_SPR_PLAYING 0xa4                                        /* its Playing byte: Play sets it, SetFrame clears it */
 static void en_flip(unsigned long e, int flip) { *(unsigned char *) (e + E_FLIPX) = flip ? 1 : 0; }
 static int en_flipped(unsigned long e) { return *(unsigned char *) (e + E_FLIPX) != 0; }
+#define E_VISIBLE 0x1c1                                                        /* Entity::Visible: the ctor 0x82bd5c stores 0x101 at +0x1c1 (Visible, Exists); NPC::Render skips the draw (and the shadow) when it is 0 */
+static void en_visible(unsigned long e, int v) { *(unsigned char *) (e + E_VISIBLE) = v ? 1 : 0; }
 
 static float *en_target(unsigned long e) { unsigned long p = g_first_player(); (void) e; return p ? fpos(p) : 0; }
 static unsigned long en_spawn(int type, int variant, float x, float y, float vx, float vy, unsigned long spawner, int sub) {
@@ -429,19 +450,28 @@ static void creep_at(unsigned long e, float sc) {
     float *p = fpos(e); unsigned long c = en_spawn(1000, 22, p[0], p[1], 0, 0, e, 0); if (c) en_scale(c, sc, sc);
     ENLOG(11, 2, "ffenemy: not done: creep Timeout (the creep keeps the game's default lifetime)");
 }
-static void ai_casualty(en_t *s, unsigned long e) {
+static int en_has_path(unsigned long e, const float *t) {                       /* npc.Pathfinder:HasPathToPos(target, false) */
+    float *p = fpos(e), wx, wy;
+    return en_line_clear(p[0], p[1], t[0], t[1], 0) || path_step(p[0], p[1], t[0], t[1], 0, &wx, &wy);
+}
+static void ai_casualty(en_t *s, unsigned long e) {                                 /* casualty.lua CasualtyAI; FlipSprite(a, b) = FlipX when a.x > b.x */
     float *p = fpos(e), *v = fvel(e), *t = en_target(e); if (!t) return;
     if (!s->init) { s->init = 1; splat_at(e, 1.5f, 2); s->state = 0; }
     if (s->state == 0) {
-        if (en_event(s, "Walk", "Move")) { en_walk_to(e, t, 4.0f, 1.8f, 1); }
-        else en_play(s, "Walk");
+        if (en_has_path(e, t)) {
+            if (en_event(s, "Walk", "Move")) {
+                if (en_line_clear(p[0], p[1], t[0], t[1], 0) || en_scared(e)) { float x = t[0] - p[0], y = t[1] - p[1]; vresize(&x, &y, 4.0f); if (en_scared(e)) { x = -x; y = -y; } v[0] = x; v[1] = y; }
+                else en_walk_to(e, t, 4.0f, 1.8f, 1);
+                en_flip(e, v[0] > 0.0f);                                              /* FlipSprite(sprite, Position + Velocity, Position) */
+            } else en_play(s, "Walk");
+        } else { en_play(s, "Idle"); en_flip(e, t[0] > p[0]); }
         v[0] *= 0.9f; v[1] *= 0.9f;
         if (s->age % 10 == 5) { creep_at(e, 0.1f); splat_at(e, 0.5f, 1); }
         if (fb_hp(e) <= *(const float *) (e + 0x358) * 0.5f) s->state = 1;
     } else if (s->state == 1) {
         if (en_was_event(s, "Trip", "Shoot")) { v[0] *= 0.6f; v[1] *= 0.6f; } else { v[0] *= 0.9f; v[1] *= 0.9f; }
         if (en_finished(s, "Trip")) { s->state = 2; ENLOG(12, 2, "ffenemy: not done: Casualty's CanShutDoors = false (the corpse still counts for the room)"); }
-        else if (en_event(s, "Trip", "Move")) { en_sound(SOUND_FETUS_JUMP, 1.0f, 1.0f); float x = t[0] - p[0], y = t[1] - p[1]; vresize(&x, &y, 10.0f); v[0] = x; v[1] = y; }
+        else if (en_event(s, "Trip", "Move")) { en_sound(SOUND_FETUS_JUMP, 1.0f, 1.0f); float x = t[0] - p[0], y = t[1] - p[1]; vresize(&x, &y, 10.0f); if (en_scared(e)) { x = -x; y = -y; } v[0] = x; v[1] = y; en_flip(e, v[0] > 0.0f); }
         else if (en_event(s, "Trip", "Shoot")) {
             en_sound(SOUND_MEAT_IMPACTS, 1.0f, 1.0f); v[0] *= 0.5f; v[1] *= 0.5f; creep_at(e, 3.0f); splat_at(e, 1.5f, 1);
             unsigned long f = en_spawn(1000, 16, p[0], p[1], 0, 0, e, 3); if (f) en_scale(f, 0.8f, 0.8f);
@@ -595,10 +625,35 @@ static void w_proj_update(unsigned long e) {
     o_proj_update(e);
 }
 
+/* The Weaver's opening pile (weaver.lua: Spawn(1000, 146), dirt:Load("gfx/enemies/weaver/weaver.anm2", true), weaverDirtPileOpeningAI = play "Ground", Remove when finished).
+ * Sprite::Load is not in the port, so the pile is spawned with subtype 150: FF's entities2.xml has a row "Weaver Dirtpile" (1000.146.150, enemies/weaver/weaver.anm2) and the
+ * engine loads that anm2 itself. The port plays 'Ground' (38 frames), sets its frame every tick (the engine's own Dirt Pile code would otherwise play its animation) and removes it. */
+#define PILE_N 12
+#define PILE_LEN 38
+static struct { unsigned long e; int age; } g_pile[PILE_N];
+static void en_pile_open(float x, float y, unsigned long spawner) {
+    unsigned long c = en_spawn(1000, 146, x, y, 0, 0, spawner, 150); if (!c) return;
+    if (g_play) g_play((void *) (c + E_SPRITE), "Ground", 1);
+    for (int k = 0; k < PILE_N; k++) if (!g_pile[k].e || !alive(g_pile[k].e)) { g_pile[k].e = c; g_pile[k].age = 0; return; }
+    en_remove(c);                                                                          /* no free slot: do not leave a pile nobody will remove */
+}
+static void en_piles_tick(void) {
+    static int last = -2; int fr = g_frame_fn ? g_frame_fn() : -1;
+    if (fr >= 0) { if (fr == last) return; last = fr; }                                   /* once per game frame, whatever the number of NPC updates */
+    for (int k = 0; k < PILE_N; k++) {
+        unsigned long c = g_pile[k].e; if (!c) continue;
+        if (!alive(c)) { g_pile[k].e = 0; continue; }
+        if (++g_pile[k].age >= PILE_LEN) { en_remove(c); g_pile[k].e = 0; }
+        else if (g_setframe) g_setframe((void *) (c + E_SPRITE), "Ground", g_pile[k].age);
+    }
+}
 #include "ffen_g1.h"
 #include "ffen_g2.h"
 #include "ffen_g3.h"
 #include "ffen_g4.h"
+#include "ffen_g5.h"
+#include "ffen_g5b.h"
+#include "ffen_g5c.h"
 static const enemy_t *en_find_in(const enemy_t *t, int n, int type, int variant) {
     for (int i = 0; i < n; i++) if (t[i].type == type && t[i].variant == variant) return &t[i];
     return 0;
@@ -609,7 +664,8 @@ static const enemy_t *en_find(int type, int variant) {
     if ((r = en_find_in(g_tab_g1, N_TAB_G1, type, variant))) return r;
     if ((r = en_find_in(g_tab_g2, N_TAB_G2, type, variant))) return r;
     if ((r = en_find_in(g_tab_g3, N_TAB_G3, type, variant))) return r;
-    return en_find_in(g_tab_g4, N_TAB_G4, type, variant);
+    if ((r = en_find_in(g_tab_g4, N_TAB_G4, type, variant))) return r;
+    return en_find_in(g_tab_g5, N_TAB_G5, type, variant);
 }
 
 
@@ -691,8 +747,8 @@ static void en_post(en_t *s, unsigned long e, const enemy_t *d, const float *pa,
         t->frames++; if (moving) t->moving++;
         if ((s->age == 3 || (moving && s->age % 12 == 0)) && t->samples < 7) {
             float *pl = en_target(e); t->samples++;
-            LOG("ffenemy: telemetry %d.%d.%d age %d pos (%.0f,%.0f) v0 (%.2f,%.2f) vAI (%.2f,%.2f) moved (%.2f,%.2f) vEng (%.2f,%.2f) player (%.0f,%.0f) st %d anim %s/%d gc %d cc %d velo +0x%x",
-                s->type, s->variant, s->sub, s->age, pa[0], pa[1], vb[0], vb[1], va[0], va[1], mx, my, v[0], v[1], pl ? pl[0] : -1.0f, pl ? pl[1] : -1.0f, s->state, s->anim, s->af, gc, cc, g_vel_off);
+            LOG("ffenemy: telemetry %d.%d.%d age %d pos (%.0f,%.0f) v0 (%.2f,%.2f) vAI (%.2f,%.2f) moved (%.2f,%.2f) vEng (%.2f,%.2f) player (%.0f,%.0f) st %d anim %s/%d spr %.1f/%d gc %d cc %d velo +0x%x",
+                s->type, s->variant, s->sub, s->age, pa[0], pa[1], vb[0], vb[1], va[0], va[1], mx, my, v[0], v[1], pl ? pl[0] : -1.0f, pl ? pl[1] : -1.0f, s->state, s->anim, s->af, *(const float *) (e + E_SPR_FRAME), *(const unsigned char *) (e + E_SPR_PLAYING), gc, cc, g_vel_off);
         }
     }
 }
@@ -727,8 +783,6 @@ static void vel_probe(unsigned long e) {
  * 23rd log's videos) because the Lua's sprite:Play only starts the animation, the engine's update of the Lua-driven monsters is what advances it.
  * So after the engine's update, a port monster whose animation is playing and whose frame did not move gets exactly one Sprite::Update. Frame-pinned monsters
  * (SetFrame every tick, byte cleared) and monsters whose vanilla AI already updated the sprite are left alone, so nothing runs twice. */
-#define E_SPR_FRAME 0xa0
-#define E_SPR_PLAYING 0xa4
 typedef void (*fn_sprupd)(void *);
 static fn_sprupd g_sprupd;                                       /* null in the host tests unless a test installs a mock */
 static unsigned char g_spr_logged[256];
@@ -740,7 +794,25 @@ static void en_sprite_tick(unsigned long e, float frame_before) {
     int k = (*(const int *) (e + E_TYPE) * 7 + *(const int *) (e + E_VARIANT)) & 255;
     if (!g_spr_logged[k]) { g_spr_logged[k] = 1; LOG("ffenemy: %d.%d: the engine did not advance the sprite, Sprite::Update is called by the port", *(const int *) (e + E_TYPE), *(const int *) (e + E_VARIANT)); }
 }
+/* The engine's own animation can be pinned: ff-codigo44's video shows a Square Fly (152.0) and a Casualty (451.70) frozen on one frame of 'Fly' / 'Walk' while the
+ * log never printed "engine did not advance the sprite" for them, so the engine touches their sprite itself (a SetFrame each tick clears the Playing byte, which is
+ * also what stops en_sprite_tick). The port keeps its own frame counter per animation (s->af, the Lua's sprite:GetFrame()), so when the engine's frame has not moved
+ * for 3 ticks while the animation has more than one frame, the port sets the frame itself every tick from that counter (and from then on). */
+static void en_sprite_sync(en_t *s, unsigned long e) {
+    if (!g_setframe || !s->anim[0] || s->alen < 2) { s->stuck = 0; return; }
+    float real = *(const float *) (e + E_SPR_FRAME);
+    if (real == s->lastreal) s->stuck++; else s->stuck = 0;
+    s->lastreal = real;
+    int exp = s->aloop ? s->af % s->alen : (s->af < s->alen ? s->af : s->alen - 1);
+    if (!s->driven && s->stuck >= 3) {
+        s->driven = 1;
+        ENLOG(33, 40, "ffenemy: %d.%d: the engine's sprite frame sat at %.1f for %d ticks (playing %d, speed %.2f) while '%s' should be at %d/%d: the port sets the frame itself",
+              s->type, s->variant, real, s->stuck, *(const unsigned char *) (e + E_SPR_PLAYING), *(const float *) (e + E_SPRITE + 0x144), s->anim, exp, s->alen);
+    }
+    if (s->driven) { g_setframe((void *) (e + E_SPRITE), s->anim, exp); s->lastreal = *(const float *) (e + E_SPR_FRAME); }
+}
 static void w_npc_update(unsigned long e) {
+    en_piles_tick();
     int type = *(const int *) (e + E_TYPE);
     const enemy_t *d = g_en_on ? en_find(type, *(const int *) (e + E_VARIANT)) : 0;      /* e is the engine's own pointer */
     en_t *s = 0; float pa[2] = { 0, 0 }, va[2] = { 0, 0 }, vb[2] = { 0, 0 };
@@ -764,6 +836,8 @@ static void w_npc_update(unsigned long e) {
     float fb = *(const float *) (e + E_SPR_FRAME);
     o_npc_update(e);
     if (d && *(const unsigned char *) (e + E_EXISTS)) en_sprite_tick(e, fb);
+    if (s && d && *(const unsigned char *) (e + E_EXISTS) && s->e == e) en_sprite_sync(s, e);
+    if (s && s->so_on && *(const unsigned char *) (e + E_EXISTS) && s->e == e) en_apply_offsets(s, e);
     if (s && d && *(const unsigned char *) (e + E_EXISTS) && s->e == e) en_post(s, e, d, pa, va, vb);
     if ((g_ensweep++ & 255) == 0) en_sweep();
 }
@@ -772,6 +846,7 @@ static int en_hurt(unsigned long e, float dmg) {               /* 1: the hit doe
     if (!g_en_on) return 0;
     const enemy_t *d = en_find(*(const int *) (e + E_TYPE), *(const int *) (e + E_VARIANT));
     if (!d) return 0;
-    if (d->hurt) d->hurt(en_slot(e), e, dmg);
-    return d->immune;
+    en_t *hs = en_slot(e);
+    if (d->hurt) d->hurt(hs, e, dmg);
+    return d->immune || hs->hurt_block;
 }
