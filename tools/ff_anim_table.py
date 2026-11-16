@@ -56,6 +56,8 @@ def keys_from_rows(path):
     return out
 
 
+MANUAL = [((160, 461, 0), 'Fly', 2, 1)]
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--ff', required=True); ap.add_argument('--rows'); ap.add_argument('--out', required=True); ap.add_argument('--extra', default='')
@@ -73,6 +75,8 @@ def main():
         key = (k[0] << 20) | (k[1] << 4) | k[2]
         for (n, ln, lp, ev) in parse(p):
             rows.append((key, n, ln, lp, len(evs), len(ev))); evs.extend(ev)
+    # vanilla anm2 files that are not in the FF folder (the game ships them): name, length, loop. 096.000_Eternal Fly.anm2: every vanilla fly loops 'Fly' over 2 frames.
+    for (k, n, ln, lp) in MANUAL: rows.append(((k[0] << 20) | (k[1] << 4) | k[2], n, ln, lp, len(evs), 0))
     with open(o.out, 'w') as f:
         f.write('/* Written by tools/ff_anim_table.py - do not edit by hand. */\n')
         f.write('typedef struct { unsigned key; const char *name; short len; char loop; short ev0, evn; } ffa_t;\ntypedef struct { const char *name; short frame; } ffe_t;\n')

@@ -7,7 +7,7 @@ Ids start after the nine of ffsound.c (833..841): 842...
 """
 import argparse, re, os, sys
 import xml.etree.ElementTree as ET
-ap = argparse.ArgumentParser(); ap.add_argument('--ff', required=True); ap.add_argument('--lua', action='append', default=[]); ap.add_argument('--out', required=True); ap.add_argument('--files', required=True)
+ap = argparse.ArgumentParser(); ap.add_argument('--ff', required=True); ap.add_argument('--lua', action='append', default=[]); ap.add_argument('--keep', help='an earlier ffsounds.h: its sounds stay registered, so a new floor adds to the old ones'); ap.add_argument('--out', required=True); ap.add_argument('--files', required=True)
 o = ap.parse_args()
 root = ET.parse(os.path.join(o.ff, 'content-repentogon', 'sounds.xml')).getroot()
 S = {s.get('name'): [x.get('path') for x in s.findall('sample')] for s in root.iter('sound')}
@@ -15,6 +15,10 @@ used = []
 for f in o.lua:
     for m in re.finditer(r'(?:mod|FiendFolio)\.Sounds\.(\w+)', open(f, encoding='utf8', errors='ignore').read()):
         if m.group(1) not in used: used.append(m.group(1))
+if o.keep and os.path.exists(o.keep):
+    for m in re.finditer(r'#define FFSND_(\w+) \d+', open(o.keep).read()):
+        k = m.group(1)
+        if not k.endswith('_PARTS') and k not in used: used.append(k)
 used.sort()
 nid = 842; defs = []; recs = []; files = []; missing = []
 for k in used:

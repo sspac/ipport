@@ -28,7 +28,11 @@ FLOORS = {
 # the entity of a wiki name where the name alone is not unique or differs (type, variant, subtype)
 PICK = {'Weaver': (155, 0, 0)}
 # entities the behaviours spawn (not rows of the console): they still need their <entity> in entities2.xml and their art
-SUPPORT = [(160, 461, 0), (160, 771, 0), (160, 773, 0), (160, 760, 2), (155, 0, 1), (155, 0, 2)]          # Pester's Eternal Fly (orbits it)
+SUPPORT = [(160, 461, 0), (160, 771, 0), (160, 773, 0), (160, 760, 2), (155, 0, 1), (155, 0, 2),
+           (1000, 146, 150),                                                      # the Weaver's opening pile
+           (150, 6, 0), (150, 6, 1), (150, 6, 2), (1000, 7014, 0), (1000, 7014, 1), (1000, 667, 0),   # Stinger shots and their poofs, Ransacked's web
+           (160, 80, 0), (160, 82, 0), (750, 80, 0),                               # what Ransacked hatches (Dweller, Resident, Sackboy)
+           (451, 91, 0), (150, 451, 0), (1000, 1980, 10), (1000, 1980, 11)]        # Dim's Soul, Shirk Spot, Spoop's trail          # Pester's Eternal Fly (orbits it)
 ICON_BASE = 10000          # SP_ENEMY[].icon >= this: frame (icon - ICON_BASE) of port_ff_enemy_icons.anm2 (spawner.c patch)
 BAND = 48
 
@@ -106,14 +110,30 @@ def entity_text(raw, key):
     return None
 
 
+ALIAS = {}
+
+
+def ci_find(root, rel):
+    cur = root
+    for part in rel.split('/'):
+        hit = [n for n in os.listdir(cur) if n.lower() == part.lower()] if os.path.isdir(cur) else []
+        if not hit: return None
+        cur = os.path.join(cur, hit[0])
+    return os.path.relpath(cur, root).replace(os.sep, '/')
+
+
 def art_files(ff, a):
     """the anm2 of a monster and the sheets it names, as paths under gfx/ that exist in FF's resources"""
     gfx = os.path.join(ff, 'resources', 'gfx'); out = []
     rel = a['anm2path'].replace('\\', '/')
-    if not os.path.exists(os.path.join(gfx, rel)): return out, [rel]
+    if not os.path.exists(os.path.join(gfx, rel)):
+        real = ci_find(gfx, rel)                                   # the XML spells the path in another case (Windows does not mind, Android does): install the file under the spelling the game asks for
+        if not real: return out, [rel]
+        ALIAS[rel] = real; src = real
+    else: src = rel
     out.append(rel)
     base = os.path.dirname(rel); lost = []
-    for sp in re.findall(r'Spritesheet Path="([^"]*)"', open(os.path.join(gfx, rel), encoding='utf-8', errors='ignore').read()):
+    for sp in re.findall(r'Spritesheet Path="([^"]*)"', open(os.path.join(gfx, src), encoding='utf-8', errors='ignore').read()):
         r = os.path.normpath(os.path.join(base, sp.replace('\\', '/'))).replace('\\', '/')
         if r.startswith('grid/'): continue                      # the grid's sheets are installed by instalar_grid.sh
         (out if os.path.exists(os.path.join(gfx, r)) else lost).append(r)
@@ -175,7 +195,7 @@ def main():
         texts.append(t if t.endswith('\n') else t + '\n')
         fs, lost = art_files(o.ff, ents[key]); files += fs
     for f in sorted(set(files)):
-        d = os.path.join(gd, f); os.makedirs(os.path.dirname(d), exist_ok=True); shutil.copyfile(os.path.join(o.ff, 'resources', 'gfx', f), d)
+        d = os.path.join(gd, f); os.makedirs(os.path.dirname(d), exist_ok=True); shutil.copyfile(os.path.join(o.ff, 'resources', 'gfx', ALIAS.get(f, f)), d)
     dd = os.path.join(o.out, 'assets', 'fiendfolio', 'ffenemies'); os.makedirs(dd, exist_ok=True)
     open(os.path.join(dd, 'entities2_%s.xml' % o.floors.replace(',', '_')), 'w', encoding='utf-8').write('<entities>\n' + '\n'.join(texts) + '</entities>\n')
     open(os.path.join(dd, 'files_%s.txt' % o.floors.replace(',', '_')), 'w').write('\n'.join(sorted(set(files))) + '\n')
