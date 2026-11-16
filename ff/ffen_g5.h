@@ -369,7 +369,8 @@ static void ai_beeter(en_t *s, unsigned long e) {
 static unsigned long en_shoot_stinger(unsigned long e, float x, float y, float vx, float vy, int maxcount) {
     unsigned long c = en_spawn(150, 6, x, y, vx, vy, e, 0);
     if (!c) return 0;
-    en_t *cs = en_adopt(c); cs->i[1] = maxcount;
+    en_t *cs = en_adopt(c); cs->i[1] = maxcount; cs->f[0] = vlen(vx, vy);
+    { float *cv = fvel(c); cv[0] = vx; cv[1] = vy; }                           /* the spawn velocity is not always taken: set it */
     en_flag_set(c, EF_FLAG_NO_PHYSICS_KNOCKBACK); en_set_collision(c, ENTCOLL_PLAYERONLY); en_set_gridcoll(c, GRIDCOLL_NOPITS);
     return c;
 }
@@ -377,7 +378,7 @@ static void ai_stinger_homing(en_t *s, unsigned long e);
 static void ai_stinger(en_t *s, unsigned long e) {
     float *p = fpos(e), *v = fvel(e); (void) p;
     if (s->sub == 1) { ai_stinger_homing(s, e); return; }
-    if (!s->init) { s->init = 1; s->f[0] = vlen(v[0], v[1]); if (!s->i[1]) s->i[1] = 10; s->i[0] = 0; en_sprite_offset(s, e, 0, -15.0f); en_flag_set(e, EF_FLAG_NO_STATUS_EFFECTS | EF_FLAG_NO_TARGET); }
+    if (!s->init) { s->init = 1; if (s->f[0] <= 0.0f) s->f[0] = vlen(v[0], v[1]); if (!s->i[1]) s->i[1] = 10; s->i[0] = 0; en_sprite_offset(s, e, 0, -15.0f); en_flag_set(e, EF_FLAG_NO_STATUS_EFFECTS | EF_FLAG_NO_TARGET); }
     en_play(s, "Idle");
     if (en_collides_grid(e)) {
         s->i[0]++;

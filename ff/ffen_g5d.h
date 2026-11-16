@@ -1,0 +1,211 @@
+/* ffen_g5d.h - Cellar monsters whose behaviour lives in main.lua (not in the erfly/ferrium/... files):
+ *   Spooter 85.960 / Super Spooter 85.961 / Mega Spooter 85.963  (mod:spooterAI, main.lua 10420)
+ *   Baby Spider 85.962 (mod:babySpiderAI / squishBabySpider / checkSpiderCollision, main.lua 10640-10700)
+ *   Sticky Sack 30.960, Walking / Stumbling Sticky Sack 88.960 / 88.961 (main.lua 10557-10640)
+ *   Honey Eye 140.0 (mod:honeyeyeAI, main.lua 13678) and the HoneyCreep projectile (ffscripts/callbacks/projectiles.lua 533)
+ * The movement of Spooter / Baby Spider (the engine's own spider walk, State 4) and of the sacks (the Boil / Gaper-like state machine) stays with the engine, exactly as it does
+ * under the Lua: the AI only adds what the Lua adds on top of it. */
+
+/* ------------------------------------------------------------------------------------------ a projectile whose landing leaves something (ProjectileCallbacks Death)
+ * The game has no hook for a projectile dying here: the ones asked for are remembered and, once one is gone from the room, its last position gets the effect. */
+#define PW_N 32
+static struct { unsigned long p; int kind; float x, y; } g_pw[PW_N];
+#define PW_HONEY 1
+static void en_proj_watch(unsigned long p, int kind) {
+    if (!p) return;
+    for (int k = 0; k < PW_N; k++) if (!g_pw[k].p) { g_pw[k].p = p; g_pw[k].kind = kind; g_pw[k].x = fpos(p)[0]; g_pw[k].y = fpos(p)[1]; return; }
+    ENLOG(70, 1, "ffenemy: not done: more than %d watched projectiles at once (the landing effect of the extra ones is dropped)", PW_N);
+}
+static void en_proj_tick(void) {
+    for (int k = 0; k < PW_N; k++) {
+        unsigned long p = g_pw[k].p; if (!p) continue;
+        if (alive(p) && *(const int *) (p + E_TYPE) == 9) { g_pw[k].x = fpos(p)[0]; g_pw[k].y = fpos(p)[1]; continue; }
+        g_pw[k].p = 0;
+        if (g_pw[k].kind == PW_HONEY) {                                         /* projectiles.lua 534: a wide brown creep (scale 2 x 1.25, honey coloured, 90 frames longer) */
+            unsigned long c = en_spawn(1000, EV_CREEP_BROWN, g_pw[k].x, g_pw[k].y, 0, 0, 0, 0);
+            if (c) en_scale(c, 2.0f, 1.25f);
+            ENLOG(71, 1, "ffenemy: not done: HoneyCreep's colour (SetColorize 5.5/3.5/1) and its longer Timeout: the creep is the plain brown one");
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------------------------ small shared helpers */
+static int en_count_type(int type) {                                           /* mod.GetEntityCount(type) */
+    unsigned long snap[SNAP]; unsigned n = snapshot(snap); int c = 0;
+    for (unsigned k = 0; k < n; k++) if (alive(snap[k]) && *(int *) (snap[k] + 0x38) == type) c++;
+    return c;
+}
+/* mod:FindRandomValidPathPosition(npc, 3): a free, reachable cell 30..80 from the npc (mode 3), otherwise any reachable free cell */
+static void en_near_pos(unsigned long e, float *ox, float *oy) {
+    int w = g_gw ? (int) g_gw : 15, h = g_gh ? (int) g_gh : 9; const float *p = fpos(e);
+    float nx[15 * 9 + 16], ny[15 * 9 + 16], ax[15 * 9 + 16], ay[15 * 9 + 16]; int nn = 0, na = 0;
+    for (int r = 0; r < h; r++) for (int c = 0; c < w; c++) {
+        float x = en_room_x(c), y = en_room_y(r);
+        if (en_xy(x, y, 0) || !en_in_room_walk(x, y, 0.0f)) continue;
+        if (!en_line_clear(p[0], p[1], x, y, 0)) continue;                      /* HasPathToPos: a clear line stands in for the path */
+        float d = vlen(x - p[0], y - p[1]);
+        if (na < (int) (sizeof ax / sizeof ax[0])) { ax[na] = x; ay[na] = y; na++; }
+        if (d > 30.0f && d < 80.0f && nn < (int) (sizeof nx / sizeof nx[0])) { nx[nn] = x; ny[nn] = y; nn++; }
+    }
+    if (nn) { int k = (int) rnd((unsigned) nn); *ox = nx[k]; *oy = ny[k]; }
+    else if (na) { int k = (int) rnd((unsigned) na); *ox = ax[k]; *oy = ay[k]; }
+    else { *ox = p[0]; *oy = p[1]; }
+}
+/* mod:FindRandomFreePosAirNoGrids(pos, minr, maxr): a cell a flyer may be in, minr..maxr from pos */
+static void en_air_pos(const float *pos, float minr, float maxr, float *ox, float *oy) {
+    int w = g_gw ? (int) g_gw : 15, h = g_gh ? (int) g_gh : 9;
+    float fx[15 * 9 + 16], fy[15 * 9 + 16], ax[15 * 9 + 16], ay[15 * 9 + 16]; int nf = 0, na = 0;
+    for (int r = 0; r < h; r++) for (int c = 0; c < w; c++) {
+        float x = en_room_x(c), y = en_room_y(r);
+        if (en_xy(x, y, 1) || !en_in_room_walk(x, y, 0.0f)) continue;
+        if (na < (int) (sizeof ax / sizeof ax[0])) { ax[na] = x; ay[na] = y; na++; }
+        float d = vlen(x - pos[0], y - pos[1]);
+        if (d > minr && d < maxr && nf < (int) (sizeof fx / sizeof fx[0])) { fx[nf] = x; fy[nf] = y; nf++; }
+    }
+    if (nf) { int k = (int) rnd((unsigned) nf); *ox = fx[k]; *oy = fy[k]; }
+    else if (na) { int k = (int) rnd((unsigned) na); *ox = ax[k]; *oy = ay[k]; }
+    else { *ox = pos[0]; *oy = pos[1]; }
+}
+
+/* ------------------------------------------------------------------------------------------ Baby Spider 85.962
+ * It dies to any hit and is SQUISHED when the player (or a friend) walks over it: the walker is only slowed by the engine's own collision. */
+static void squish_baby(unsigned long e, int remove) {
+    float *p = fpos(e);
+    en_spawn(1000, 38, p[0], p[1], 0, 0, e, 7000);                              /* Baby Spider Explosion */
+    en_sound(SOUND_DEATH_BURST_SMALL, 0.8f, 1.0f);
+    ENLOG(72, 1, "ffenemy: not done: the Baby Spider's splat (MakeSplat 0.5 in squishBabySpider)");
+    if (remove) en_remove(e);
+}
+static void ai_babyspider(en_t *s, unsigned long e) {
+    if (!s->init) { s->init = 1; en_flag_set(e, EF_FLAG_NO_STATUS_EFFECTS | EF_FLAG_NO_REWARD); }
+    if (en_flag(e, EF_FLAG_FRIENDLY)) return;                                   /* checkSpiderCollision: not for a friendly spider */
+    unsigned long pl = g_first_player ? g_first_player() : 0; if (!pl) return;
+    const float *p = fpos(e), *q = fpos(pl), *v = fvel(pl);
+    if (vlen(q[0] - p[0], q[1] - p[1]) > 21.0f) return;                         /* player radius 13 + spider 8: the collision callback's touch */
+    if (en_player_has(236)) { en_remove(e); return; }                           /* COLLECTIBLE_E_COLI: the spiders just vanish */
+    if (v[0] * v[0] + v[1] * v[1] > 1.0f) squish_baby(e, 1);                    /* a player who stands still does not squish it */
+    ENLOG(73, 1, "ffenemy: not done: a friendly walker squishing Baby Spiders (only the player is checked: no collision callback)");
+}
+static void die_babyspider(en_t *s, unsigned long e) { (void) s; squish_baby(e, 0); }
+
+/* ------------------------------------------------------------------------------------------ Spooter 85.960 / Super 85.961 / Mega 85.963
+ * The engine walks it (State 4); i[0] = shot fired this attack. */
+static void ai_spooter(en_t *s, unsigned long e) {
+    float *p = fpos(e), *v = fvel(e), *t = en_target(e); if (!t) return;
+    if (!s->init) { s->init = 1; ENLOG(74, 1, "ffenemy: not done: the Bursting Sack variant of Spooters (other sheet, harmless): ReplaceSpritesheet is not hooked"); }
+    float speed = (s->variant == 961 || s->variant == 963) ? 7.0f : 5.0f;
+    if (vlen(v[0], v[1]) > speed) vresize(&v[0], &v[1], speed);
+    int st = en_get_state(e);
+    if (en_event(s, "Attack", "Shoot")) {
+        float x = t[0] - p[0], y = t[1] - p[1];
+        en_sound(SOUND_BLOODSHOOT, 1.0f, 1.0f);
+        vresize(&x, &y, 7.0f);
+        if (s->variant == 960 || s->variant == 963) en_shoot(e, 0, p[0], p[1], x, y);
+        if (s->variant == 961 || s->variant == 963) for (int i = 1; i <= 2; i++) { float rx, ry; vrot(x, y, (float) (-48 + i * 32), &rx, &ry); en_shoot(e, 0, p[0], p[1], rx, ry); }
+    }
+    if (st == 4 && rint_(1, 20) == 1 && vlen(t[0] - p[0], t[1] - p[1]) < 200.0f && en_line_clear(t[0], t[1], p[0], p[1], 1) && !en_scare_conf(e)) { en_set_state(e, 8); st = 8; }
+    if (st == 8) {
+        if (en_finished(s, "Attack")) en_set_state(e, 4);
+        else if (!en_playing(s, "Attack")) { en_flip(e, t[0] < p[0]); en_play(s, "Attack"); }
+    }
+}
+
+/* ------------------------------------------------------------------------------------------ Sticky Sack 30.960, Walking 88.960 / Stumbling 88.961 Sticky Sack
+ * The sack throws 2-3 spiders (EntityNPC.ThrowSpider + Morph 85.962 in the Lua); ThrowSpider is not hooked, so the Baby Spiders appear on the landing spot.
+ * i[0] = the throw of this attack was done, i[1] = the check at frame 0 was done. When it dies it bursts into 4-10 Baby Spiders. */
+static void sack_throw(unsigned long e) {
+    float *p = fpos(e);
+    for (int i = rint_(2, 3); i > 0; i--) {
+        float tx, ty; en_near_pos(e, &tx, &ty);
+        float rx, ry; en_rand_vec(&rx, &ry, (float) rint_(0, 20));
+        en_sound(FFSND_Plorp, 0.9f, (float) rint_(95, 105) / 100.0f);
+        if (en_flag(e, EF_FLAG_FRIENDLY)) { ENLOG(75, 1, "ffenemy: not done: a friendly sack's Blue Baby Spider familiars (the spiders stay hostile Baby Spiders)"); }
+        unsigned long c = en_spawn(85, 962, tx + rx, ty + ry, 0, 0, e, 0);
+        if (c) en_flag_clear(c, EF_FLAG_APPEAR);
+    }
+    ENLOG(76, 1, "ffenemy: not done: the sack's spiders are thrown in an arc (EntityNPC.ThrowSpider): they appear on the landing spot");
+    (void) p;
+}
+static void sack_burst(unsigned long e) {
+    float *p = fpos(e);
+    for (int i = rint_(4, 10); i > 0; i--) {                                    /* mod.spawnent(npc, pos, RandomVector()*math.random(20), 85, 962) */
+        float x, y; en_rand_vec(&x, &y, (float) rint_(1, 20));
+        unsigned long c = en_spawn(85, 962, p[0], p[1], x, y, e, 0);
+        if (c) en_flag_clear(c, EF_FLAG_APPEAR);
+    }
+}
+static void ai_stickysack(en_t *s, unsigned long e) {
+    int st = en_get_state(e);
+    if (st == 3) {
+        s->cd++;                                                                /* npc.StateFrame (the engine counts it too: the Lua adds one more each frame) */
+        s->i[0] = s->i[1] = 0;
+        if (fb_hp(e) == *(const float *) (e + 0x358) && s->cd > 30 && en_count_type(85) < 40) { en_set_state(e, 8); en_set_statef(e, 0); s->cd = 0; }
+    } else if (st == 8) {
+        int fr = (int) *(const float *) (e + E_SPR_FRAME);
+        if (fr == 0 && !s->i[1]) {
+            s->i[1] = 1;
+            if (en_count_type(85) > 40) { en_set_state(e, 3); en_replay(s, "Shake"); }
+        }
+        if (fr >= 10 && !s->i[0]) { s->i[0] = 1; sack_throw(e); }
+    } else { s->i[0] = s->i[1] = 0; }
+}
+static void die_stickysack(en_t *s, unsigned long e) { (void) s; sack_burst(e); }
+
+/* Walking / Stumbling: the throw is at frame 10 of the "Shoot" animation; variant 961 (Stumbling) starts a throw 1 frame in 15 when there are < 40 spiders. */
+static void ai_walkingsack(en_t *s, unsigned long e) {
+    int st = en_get_state(e);
+    if (st == STATE_ATTACK) {                                                   /* sprite:IsPlaying("Shoot"): the engine's attack */
+        if ((int) *(const float *) (e + E_SPR_FRAME) >= 10 && !s->i[0]) { s->i[0] = 1; sack_throw(e); }
+    } else {
+        s->i[0] = 0;
+        if (s->variant == 961 && s->age % 15 == (int) rnd(15) + 1 && !en_flag(e, EF_FLAG_FRIENDLY) && en_count_type(85) < 40) en_set_state(e, STATE_ATTACK);
+    }
+}
+static void die_walkingsack(en_t *s, unsigned long e) { (void) s; sack_burst(e); }
+
+/* ------------------------------------------------------------------------------------------ Honey Eye 140.0 (main.lua 13678)
+ * state 0 move / 1 attack; cd = StateFrame; f[0],f[1] = targetvel; i[0] = Run */
+static void ai_honeyeye(en_t *s, unsigned long e) {
+    float *p = fpos(e), *v = fvel(e), *t = en_target(e); if (!t) return;
+    if (!s->init) {
+        s->init = 1; s->state = 0;
+        float x, y; en_air_pos(t, 50.0f, 200.0f, &x, &y);
+        s->f[0] = x - p[0]; s->f[1] = y - p[1]; vresize(&s->f[0], &s->f[1], 3.0f);
+    } else s->cd++;
+    if (s->state == 0) {
+        en_play(s, "Fly");
+        float dist = vlen(t[0] - p[0], t[1] - p[1]);
+        if (dist <= 50.0f && !en_confused(e)) { s->f[0] = t[0] - p[0]; s->f[1] = t[1] - p[1]; vresize(&s->f[0], &s->f[1], -6.0f); s->i[0] = 1; }
+        else if (s->cd % 30 == 0 || s->i[0]) {
+            float x, y; en_air_pos(t, 50.0f, 200.0f, &x, &y);
+            s->f[0] = x - p[0]; s->f[1] = y - p[1]; vresize(&s->f[0], &s->f[1], 4.5f); s->i[0] = 0;
+        }
+        v[0] = lerpf(v[0], s->f[0], 0.075f); v[1] = lerpf(v[1], s->f[1], 0.075f);
+        if (dist <= 285.0f && s->cd >= 85 && !en_scare_conf(e)) s->state = 1;
+    } else {
+        v[0] *= 0.95f; v[1] *= 0.95f;
+        en_play(s, "Shoot");
+        if (en_event(s, "Shoot", "Shoot")) {
+            float x = (t[0] - p[0]) * 0.05f, y = (t[1] - p[1]) * 0.05f;
+            if (vlen(x, y) > 10.0f) vresize(&x, &y, 10.0f);
+            en_sound(SOUND_BLOODSHOOT, 1.0f, 1.0f);
+            en_pp_t pp; memset(&pp, 0, sizeof pp);
+            pp.has_fspeed = 1; pp.fspeed = -25.0f; pp.has_faccel = 1; pp.faccel = 1.5f; pp.has_scale = 1; pp.scale = 2.0f;
+            unsigned long pr = en_shoot_p(e, p[0], p[1], x, y, &pp);
+            en_proj_watch(pr, PW_HONEY);
+        }
+        if (en_finished(s, "Shoot")) { s->state = 0; s->cd = 0; }
+    }
+}
+
+static const enemy_t g_tab_g5d[] = {
+    { 85, 960, ai_spooter, 0, 0, 0 },
+    { 85, 961, ai_spooter, 0, 0, 0 },
+    { 85, 963, ai_spooter, 0, 0, 0 },
+    { 85, 962, ai_babyspider, die_babyspider, 0, 0 },
+    { 30, 960, ai_stickysack, die_stickysack, 0, 0 },
+    { 88, 960, ai_walkingsack, die_walkingsack, 0, 0 },
+    { 88, 961, ai_walkingsack, die_walkingsack, 0, 0 },
+    { 140, 0, ai_honeyeye, 0, 0, 0 },
+};
+#define N_TAB_G5D ((int) (sizeof g_tab_g5d / sizeof g_tab_g5d[0]))

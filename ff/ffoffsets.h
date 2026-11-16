@@ -14,7 +14,7 @@
 #define OFF_ENT_MASS 0x350       /* float. Measured from the ff-codigo42 dumps: Slammer 3 (XML collisionMass 3), two Fatty-like 100; no AI uses it yet */
 #define OFF_ENT_TARGET 0
 #define OFF_ENT_CHILD 0
-#define OFF_ENT_SPRITEOFFSET 0
+#define OFF_ENT_SPRITEOFFSET 0x320   /* Vector (x, y) floats. NPC::Render 0x697618: the sprite is drawn at ToRenderPos(Position(+0x310) + [+0x320]) (0x697cfc / 0x698078) while the shadow (0x697848) uses Position alone, i.e. exactly the Lua's SpriteOffset; the hopping vanilla monsters write +0x324 (156 stores); Entity ctor 0x82bd30 zeroes it */
 #define OFF_ENT_DEPTHOFFSET 0
 #define OFF_PROJ_HEIGHT 0x400   /* float. Projectile init 0x678ed0..0x678eec stores the double at 0x9526d0 = (-23.0f, 0.0f) at +0x400/+0x404: Height default -23 (the Lua default) then FallingSpeed 0 */
 #define OFF_PROJ_FALLINGSPEED 0x404   /* float. second half of that init; Projectile::Update 0x678f8c/0x6790c0 adds 0.5*[+0x404] to the velocity-height terms */

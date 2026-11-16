@@ -10,7 +10,7 @@ static void snap90(float *x, float *y) { float l = vlen(*x, *y), a = en_angle(*x
 static void slim_armhurt(en_t *s) { en_sound(SOUND_BONE_SNAP, 0.6f, (float) rint_(8, 12) / 10.0f); s->i[2] = 1; s->state = 3; s->i[1] = 0; }
 static void ai_limb(en_t *s, unsigned long e) {
     float *p = fpos(e), *v = fvel(e), *t = en_target(e); if (!t) return;
-    if (!s->init) { s->init = 1; if (s->state != 4) s->state = 0; s->cd = 0; if (rnd(2) == 0) en_flip(e, 1); ENLOG(26, 1, "ffenemy: not done: Limb SpriteOffset(0,-1), Pale/Bone limb variants"); } else s->cd++;
+    if (!s->init) { s->init = 1; if (s->state != 4) s->state = 0; s->cd = 0; if (rnd(2) == 0) en_flip(e, 1); en_sprite_offset(s, e, 0.0f, -1.0f); ENLOG(26, 1, "ffenemy: not done: Pale/Bone limb variants"); } else s->cd++;
     if (s->state == 0) {
         v[0] *= 0.8f; v[1] *= 0.8f;
         if (!en_playing(s, "Idle2")) { en_play(s, "Idle"); if (rnd(50) == 0) en_play(s, "Idle2"); }
@@ -124,7 +124,7 @@ static void ai_bowler(en_t *s, unsigned long e) {
     float *p = fpos(e), *v = fvel(e), *t = en_target(e); if (!t) return;
     char an[40];
     if (!s->init) { s->state = 0; s->i[0] = s->sub == 1 ? 2 : 1; snprintf(an, sizeof an, "WalkDown0%d", s->i[0]); en_set_frame(s, an, 0); s->f[0] = *(float *) (e + 0x358); s->cd = 40; s->init = 1;
-        ENLOG(28, 1, "ffenemy: not done: Bowler BloodExplode on losing the head, RolyPolyRoll looping sound, SpriteOffset"); } else s->cd++;
+        ENLOG(28, 1, "ffenemy: not done: Bowler BloodExplode on losing the head, RolyPolyRoll looping sound"); } else s->cd++;
     if (s->state == 0) { snprintf(an, sizeof an, "WalkDown0%d", s->i[0]); en_set_frame(s, an, 0); s->state = 1; s->cd = 0; }
     else if (s->state == 1) {
         int sframe = s->cd % 32;
@@ -185,8 +185,8 @@ static void ai_bowler(en_t *s, unsigned long e) {
 /* the rolling ball: f[0] headhealth is unused; i[0] = frame counter parity, cd = StateFrame */
 static void ai_bowlerhead(en_t *s, unsigned long e) {
     float *p = fpos(e), *v = fvel(e), *t = en_target(e); if (!t) return;
-    en_set_collision(e, ENTCOLL_PLAYEROBJECTS);
-    if (!s->init) { s->init = 1; ENLOG(29, 1, "ffenemy: not done: Bowler ball SpriteOffset(0,-8) and RolyPolyRoll looping sound"); }
+    en_set_collision(e, ENTCOLL_PLAYEROBJECTS); en_sprite_offset(s, e, 0.0f, -8.0f);          /* npc.SpriteOffset = Vector(0, -8) */
+    if (!s->init) { s->init = 1; ENLOG(29, 1, "ffenemy: not done: Bowler ball RolyPolyRoll looping sound"); }
     s->i[0]++;
     if (s->ref) { v[0] *= 0.1f; v[1] *= 0.1f; }
     float speed = vlen(v[0], v[1]), x = t[0] - p[0], y = t[1] - p[1]; vresize(&x, &y, speed);
@@ -227,34 +227,34 @@ static void ai_weaver(en_t *s, unsigned long e) {
             int k = s->i[0] - 1; int gone = w->h[k].state == 0 || w->h[k].state == 2;
             if (gone) { en_remove(e); return; }
             float off = w->h[k].off + w->h[k].offe * (float) s->sub;
-            en_set_collision(e, (off <= -25.0f || off > 0) ? ENTCOLL_NONE : ENTCOLL_PLAYEROBJECTS);
+            en_sprite_offset(s, e, 0.0f, off); en_set_collision(e, (off <= -25.0f || off > 0) ? ENTCOLL_NONE : ENTCOLL_PLAYEROBJECTS);
             p[0] = w->h[k].x; p[1] = w->h[k].y; v[0] = w->h[k].vx; v[1] = w->h[k].vy;
         }
         return;
     }
     wv_t *w = wv_get(e, 1); if (!w) return;
-    if (!s->init) { s->init = 1; s->cd = -10; s->state = 0; w->n = 0; ENLOG(30, 1, "ffenemy: not done: Weaver SpriteOffset hop arc / alpha fade, Visible toggling, weaver.anm2 loaded over the dirt pile (the engine's own 1000.146 art is used), approximated orbit seeds"); } else s->cd++;
+    if (!s->init) { s->init = 1; s->cd = -10; s->state = 0; w->n = 0; ENLOG(30, 1, "ffenemy: not done: Weaver alpha fade (only the Archer/descending variants use it), approximated orbit seeds"); } else s->cd++;
     float tx = t[0], ty = t[1]; weaver_orbit(e, &tx, &ty, s->state == 0);
     float x = tx - p[0], y = ty - p[1]; vresize(&x, &y, speed); if (en_scared(e)) { x = -x; y = -y; }
     v[0] = lerpf(v[0], x, lerpv); v[1] = lerpf(v[1], y, lerpv);
     if (s->state == 0) {
-        en_play(s, "Empty"); en_set_gridcoll(e, GRIDCOLL_WALLS); en_set_collision(e, ENTCOLL_NONE);
+        en_visible(e, 0); en_play(s, "Empty"); en_set_gridcoll(e, GRIDCOLL_WALLS); en_set_collision(e, ENTCOLL_NONE);
         if (!s->i[2]) { s->i[2] = 1; s->f[2] = p[0]; s->f[3] = p[1] + 20.0f; }                    /* d.lastcreepleft = d.lastcreepleft or pos + (0,20) */
         if (vlen(s->f[2] - p[0], s->f[3] - p[1]) > 15.0f && s->age > 0) {
-            if (en_tile(p[0], p[1]) == 0) en_spawn(1000, 146, p[0], p[1], 0, 0, e, 0);              /* the dirt trail */
+            if (en_tile(p[0], p[1]) == 0) en_spawn(1000, 146, p[0], p[1], 0, 0, e, 0);              /* the dirt trail: the engine's own Dirt Pile (no Load) */
             s->f[2] = p[0]; s->f[3] = p[1];
         }
         if (s->cd > groundtime && en_tile(p[0], p[1]) == 0 && en_in_room_walk(p[0], p[1], 15.0f)) {
             en_sound(SOUND_MAGGOT_BURST_OUT, 0.3f, 1.3f + (float) rint_(1, 3) / 10.0f);
-            en_spawn(1000, 146, p[0], p[1], 0, 0, e, 0); s->i[2] = 0;                              /* the pile where it surfaces */
+            en_pile_open(p[0], p[1], e); s->i[2] = 0;                                                 /* the pile where it surfaces: weaver.anm2 'Ground' */
             s->state = 1; s->i[0] = rint_(1, 15) == 1 ? 2 : 1; s->cd = 0;
         }
     } else {
-        char an[24]; snprintf(an, sizeof an, "Head%s%d", v[1] < 0 ? "Up" : "Down", s->i[0]); en_play(s, an); en_flip(e, v[0] < 0);
+        en_visible(e, 1); char an[24]; snprintf(an, sizeof an, "Head%s%d", v[1] < 0 ? "Up" : "Down", s->i[0]); en_play(s, an); en_flip(e, v[0] < 0);
         float curve = 0.0f - sinf(0.2f * (float) s->cd / curvar) * 20.0f; int coll = en_tile(p[0], p[1]);
         if (s->cd > curframe && coll >= 2) { s->cd = curframe; s->i[1] = 1; }
-        s->f[0] = curve; en_set_collision(e, curve <= -25.0f ? ENTCOLL_NONE : ENTCOLL_ALL);
-        if (s->cd > curframe + 2) { en_spawn(1000, 146, p[0], p[1], 0, 0, e, 0); en_sound(SOUND_MAGGOT_ENTER_GROUND, 0.3f, 1.3f + (float) rint_(1, 3) / 10.0f); s->state = 0; s->cd = 0; }
+        s->f[0] = curve; en_sprite_offset(s, e, 0.0f, curve); en_set_collision(e, curve <= -25.0f ? ENTCOLL_NONE : ENTCOLL_ALL);
+        if (s->cd > curframe + 2) { en_pile_open(p[0], p[1], e); en_sound(SOUND_MAGGOT_ENTER_GROUND, 0.3f, 1.3f + (float) rint_(1, 3) / 10.0f); s->state = 0; s->cd = 0; }
     }
     float offe = s->i[1] ? 0.0f : ((float) s->cd - 7.5f) * -0.5f;
     memmove(&w->h[1], &w->h[0], sizeof w->h[0] * (WV_HIST - 1)); if (w->n < WV_HIST) w->n++;
@@ -275,7 +275,8 @@ static void ai_weaver(en_t *s, unsigned long e) {
 static void ai_tap(en_t *s, unsigned long e) {
     float *p = fpos(e);
     if (!s->init) { s->init = 1; s->state = 0; s->cd = -1; en_set_collision(e, ENTCOLL_NONE); en_flag_set(e, EF_FLAG_NO_PHYSICS_KNOCKBACK | EF_FLAG_NO_KNOCKBACK);
-        ENLOG(31, 1, "ffenemy: not done: Tap urn grid entity (SpawnGridEntity/GetUnoccupiedPot not measured: it never moves to another urn), looping TapLoop sound, creep Timeout 40, SpriteOffset(-1,-11)"); } else s->cd++;
+        ENLOG(31, 1, "ffenemy: not done: Tap urn grid entity (SpawnGridEntity/GetUnoccupiedPot not measured: it never moves to another urn), looping TapLoop sound, creep Timeout 40"); } else s->cd++;
+    en_sprite_offset(s, e, -1.0f, -11.0f);                                                  /* npc.SpriteOffset = Vector(-1, -11) every tick */
     if (en_event(s, s->anim, "Place")) en_sound(FFSND_TapTap, 0.3f, (float) rint_(90, 100) / 100.0f);
     if (s->state == 0) {
         en_play(s, "Idle");

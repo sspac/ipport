@@ -179,7 +179,8 @@ static unsigned long en_shoot_p(unsigned long e, float x, float y, float vx, flo
 }
 static void en_shoot(unsigned long e, int variant, float x, float y, float vx, float vy) { en_pp_t pp; memset(&pp, 0, sizeof pp); pp.variant = variant; en_shoot_p(e, x, y, vx, vy, &pp); }
 static void en_kill(unsigned long e) { hit_enemy(e, 1000000.0f); }
-static int en_dead(unsigned long e) { return !alive(e) || (g_hp_off && fb_hp(e) <= 0.0f); }
+/* an entity whose XML baseHP is 0 (Stinger projectiles, creeps...) has MaxHP 0 and is never dead from its HP: the engine kills only by Kill() */
+static int en_dead(unsigned long e) { return !alive(e) || (g_hp_off && fb_hp(e) <= 0.0f && *(const float *) (e + 0x358) > 0.0f); }
 static int en_room_clear(void) { int a, b, d, t; ffminion_room_info(&a, &b, &d, &t); return t == 0; }
 /* Walls and rocks, from the ENGINE's own answer when it is known (Room::GetGridCollision: 1 pit, 2 object, 3 solid, 4 wall, 5 wall-but-player):
  * a flyer meets only walls, a walker pits, rocks and walls. Without any grid nothing counts as solid (tile_at() says "wall" for every tile then,
@@ -637,6 +638,7 @@ static void en_pile_open(float x, float y, unsigned long spawner) {
     for (int k = 0; k < PILE_N; k++) if (!g_pile[k].e || !alive(g_pile[k].e)) { g_pile[k].e = c; g_pile[k].age = 0; return; }
     en_remove(c);                                                                          /* no free slot: do not leave a pile nobody will remove */
 }
+static void en_proj_tick(void);
 static void en_piles_tick(void) {
     static int last = -2; int fr = g_frame_fn ? g_frame_fn() : -1;
     if (fr >= 0) { if (fr == last) return; last = fr; }                                   /* once per game frame, whatever the number of NPC updates */
@@ -646,6 +648,7 @@ static void en_piles_tick(void) {
         if (++g_pile[k].age >= PILE_LEN) { en_remove(c); g_pile[k].e = 0; }
         else if (g_setframe) g_setframe((void *) (c + E_SPRITE), "Ground", g_pile[k].age);
     }
+    en_proj_tick();
 }
 #include "ffen_g1.h"
 #include "ffen_g2.h"
@@ -654,6 +657,7 @@ static void en_piles_tick(void) {
 #include "ffen_g5.h"
 #include "ffen_g5b.h"
 #include "ffen_g5c.h"
+#include "ffen_g5d.h"
 static const enemy_t *en_find_in(const enemy_t *t, int n, int type, int variant) {
     for (int i = 0; i < n; i++) if (t[i].type == type && t[i].variant == variant) return &t[i];
     return 0;
@@ -665,7 +669,8 @@ static const enemy_t *en_find(int type, int variant) {
     if ((r = en_find_in(g_tab_g2, N_TAB_G2, type, variant))) return r;
     if ((r = en_find_in(g_tab_g3, N_TAB_G3, type, variant))) return r;
     if ((r = en_find_in(g_tab_g4, N_TAB_G4, type, variant))) return r;
-    return en_find_in(g_tab_g5, N_TAB_G5, type, variant);
+    if ((r = en_find_in(g_tab_g5, N_TAB_G5, type, variant))) return r;
+    return en_find_in(g_tab_g5d, N_TAB_G5D, type, variant);
 }
 
 

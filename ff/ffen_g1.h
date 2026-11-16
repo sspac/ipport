@@ -88,8 +88,10 @@ static void ai_mrhorfhead(en_t *s, unsigned long e) {
         float speed = dist / (float) airtime; if (speed > 10.0f) speed = 10.0f;
         float ux = dx, uy = dy; vresize(&ux, &uy, speed);
         p[0] = s->f[0] + ux * (float) s->age; p[1] = s->f[1] + uy * (float) s->age; v[0] = ux; v[1] = uy;
-        ENLOG(18, 1, "ffenemy: not done: the head's arc (SpriteOffset is not measured)");
-        if (s->age > airtime) { s->state = 0; en_set_collision(e, ENTCOLL_ALL); en_set_gridcoll(e, GRIDCOLL_GROUND); }
+        { float arcmax = dist / 5.0f > 20.0f ? dist / 5.0f : 20.0f, nd = vlen(s->f[2] - p[0], s->f[3] - p[1]);
+          float calc = dist > 0 ? sinf(nd / dist * 3.14159265f) * arcmax : 0.0f, cl = calc < arcmax ? calc : arcmax; if (cl < -10.0f) cl = -10.0f;
+          en_sprite_offset(s, e, 0.0f, -10.0f - cl); }                                           /* the head's arc: SpriteOffset = (0, -10 - clamp(sin(ndist/dist*pi)*arcmax)) */
+        if (s->age > airtime) { en_sprite_offset(s, e, 0.0f, 0.0f); s->state = 0; en_set_collision(e, ENTCOLL_ALL); en_set_gridcoll(e, GRIDCOLL_GROUND); }
     } else {
         en_flip(e, 0); v[0] *= 0.1f; v[1] *= 0.1f;
         if (en_finished(s, "Land")) { unsigned long n = en_morph(e, red ? 160 : 12, red ? 630 : 0, 0); if (n && red) { en_t *ns = en_adopt(n); ns->f[0] = 95.0f; } }

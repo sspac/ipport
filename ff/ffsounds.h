@@ -1,5 +1,5 @@
 /* Written by tools/ff_sounds.py - do not edit by hand. FFSND_<key> = the id to give ffsound_play; a sound with several parts (7 samples each) has FFSND_<key>_PARTS = n and the parts are consecutive ids. */
-#define FF_NSOUNDS_EXTRA 38
+#define FF_NSOUNDS_EXTRA 39
 #define FFSND_BaloonShort 842
 #define FFSND_BeeBuzz 843
 #define FFSND_BeeBuzzDown 844
@@ -27,17 +27,18 @@
 #define FFSND_MukChargeUp 866
 #define FFSND_MukLaugh 867
 #define FFSND_MukVomit 868
-#define FFSND_Ricochet 869
-#define FFSND_RolyPolyRoll 870
-#define FFSND_SplashLarge 871
-#define FFSND_SplashLargePlonkless 872
-#define FFSND_TapEnd 873
-#define FFSND_TapHoney01 874
-#define FFSND_TapHoney02 875
-#define FFSND_TapLoop 876
-#define FFSND_TapStart 877
-#define FFSND_TapTap 878
-#define FFSND_WingFlap 879
+#define FFSND_Plorp 869
+#define FFSND_Ricochet 870
+#define FFSND_RolyPolyRoll 871
+#define FFSND_SplashLarge 872
+#define FFSND_SplashLargePlonkless 873
+#define FFSND_TapEnd 874
+#define FFSND_TapHoney01 875
+#define FFSND_TapHoney02 876
+#define FFSND_TapLoop 877
+#define FFSND_TapStart 878
+#define FFSND_TapTap 879
+#define FFSND_WingFlap 880
 static const struct { int id; const char *files[7]; } FF_SND_X[] = {
     { 842, { "BalloonBlowingUpShort.wav" } },
     { 843, { "beebuzz.wav" } },
@@ -66,17 +67,18 @@ static const struct { int id; const char *files[7]; } FF_SND_X[] = {
     { 866, { "DroolerChargeUp.wav" } },
     { 867, { "DroolerLaugh.wav" } },
     { 868, { "MukVomit01.wav", "MukVomit02.wav" } },
-    { 869, { "Rico01.wav", "Rico02.wav", "Rico03.wav", "Rico04.wav" } },
-    { 870, { "rolling.wav" } },
-    { 871, { "LargeSplash01.wav", "LargeSplash02.wav", "LargeSplash03.wav", "LargeSplash04.wav" } },
-    { 872, { "LargeSplash03.wav", "LargeSplash04.wav" } },
-    { 873, { "tap_close.wav" } },
-    { 874, { "MP01.wav" } },
-    { 875, { "MP02.wav" } },
-    { 876, { "tap_loop.wav" } },
-    { 877, { "tap_open1.wav" } },
-    { 878, { "tap_open2.wav" } },
-    { 879, { "WingFlap1.wav", "WingFlap2.wav" } },
+    { 869, { "plorp_1.wav", "plorp_2.wav", "plorp_3.wav", "plorp_4.wav" } },
+    { 870, { "Rico01.wav", "Rico02.wav", "Rico03.wav", "Rico04.wav" } },
+    { 871, { "rolling.wav" } },
+    { 872, { "LargeSplash01.wav", "LargeSplash02.wav", "LargeSplash03.wav", "LargeSplash04.wav" } },
+    { 873, { "LargeSplash03.wav", "LargeSplash04.wav" } },
+    { 874, { "tap_close.wav" } },
+    { 875, { "MP01.wav" } },
+    { 876, { "MP02.wav" } },
+    { 877, { "tap_loop.wav" } },
+    { 878, { "tap_open1.wav" } },
+    { 879, { "tap_open2.wav" } },
+    { 880, { "WingFlap1.wav", "WingFlap2.wav" } },
     { 0, { 0 } } };
 /* parts of the multi-part sounds: first id, count (ffsound_play picks one at random) */
 static const struct { int first, n; } FF_SND_PARTS[] = {

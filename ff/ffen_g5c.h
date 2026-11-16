@@ -43,7 +43,7 @@ static void die_marge(en_t *s, unsigned long e) {
         float x, y; en_rand_vec(&x, &y, 1.0f);
         float d = (float) rint_(25, 45);
         unsigned long c = en_spawn(281, 0, p[0] + x * d, p[1] + y * d, 0, 0, e, 0);
-        if (c) { en_flag_clear(c, EF_FLAG_APPEAR); *(int *) (c + OFF_NPC_STATE) = STATE_MOVE; }
+        if (c) { en_flag_clear(c, EF_FLAG_APPEAR); }
     }
 }
 static void ai_marge(en_t *s, unsigned long e) {

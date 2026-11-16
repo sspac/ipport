@@ -17,7 +17,8 @@ static void ai_bumbler(en_t *s, unsigned long e) {
     unsigned long pl = en_player_ptr(); float *tv = pl ? fvel(pl) : v;
     char an[40];
     if (!s->init) { s->init = 1; s->state = 0; en_set_gridcoll(e, GRIDCOLL_WALLS); } else s->cd++;
-    ENLOG(20, 1, "ffenemy: not done: Bumbler's SpriteOffset(0,-10) (not measured), Skatole passivity and Beelzebub check");
+    en_sprite_offset(s, e, 0.0f, -10.0f);                                              /* npc.SpriteOffset = Vector(0, -10) every tick */
+    ENLOG(20, 1, "ffenemy: not done: Bumbler's Skatole passivity and Beelzebub check");
     if (s->state == 0) {
         en_play(s, "Idle");
         float tx = t[0] - tv[0] * 40.0f, ty = t[1] - tv[1] * 40.0f;                     /* confusePos(): the target itself unless confused */
@@ -212,9 +213,9 @@ static void ai_shitling(en_t *s, unsigned long e) {
 static void ai_poobottle(en_t *s, unsigned long e) {
     float *p = fpos(e), *v = fvel(e);
     if (!s->init) { s->init = 1; s->state = 0; s->f[2] = 1.0f; en_set_collision(e, ENTCOLL_NONE); } else s->cd++;
-    ENLOG(24, 1, "ffenemy: not done: Poobottle/Drainfly poop interaction (grid entity API not measured; it flies away as when no poop exists), SpriteOffset, Color");
+    ENLOG(24, 1, "ffenemy: not done: Poobottle/Drainfly poop interaction (grid entity API not measured; it flies away as when no poop exists), the fade-to-black Color and the Scale growth (Color/Scale not measured on the entity)");
     if (s->state == 0) {
-        en_play(s, "Fly");
+        en_play(s, "Fly"); en_sprite_offset(s, e, 0.0f, -30.0f);                         /* npc.SpriteOffset = Vector(0, -30) */
         if (en_scared(e)) { s->state = 1; s->cd = 0; }
         else { v[0] *= 0.9f; v[1] *= 0.9f; if (s->cd > 15) { s->state = 1; s->cd = 0; } }
     } else {
@@ -222,6 +223,7 @@ static void ai_poobottle(en_t *s, unsigned long e) {
         if (!s->i[0]) { en_rand_vec(&s->f[0], &s->f[1], 15.0f); s->i[0] = 1; }
         v[0] = lerpf(v[0], s->f[0], 0.03f); v[1] = lerpf(v[1], s->f[1], 0.03f);
         s->f[2] = lerpf(s->f[2], 0.0f, 0.02f);
+        en_sprite_offset(s, e, 0.0f, lerpf(s->so[1], -100.0f, 0.02f));                   /* SpriteOffset lerps up to (0, -100) */
         int w = g_gw ? (int) g_gw : 15, h = g_gh ? (int) g_gh : 9;
         if (p[0] < -100.0f || p[0] > (float) w * 40.0f + 100.0f || p[1] > (float) h * 40.0f + 300.0f || p[1] < -300.0f) en_remove(e);
         if (s->cd > 10) en_set_can_shut_doors(e, 0);
