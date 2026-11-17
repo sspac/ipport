@@ -15,7 +15,7 @@ Icons: each monster's resting pose (the game's own rule: "Idle", else the defaul
 frame), drawn from FF's own gfx, cropped to the ink, a body over 48 px brought down by the smallest whole factor, each block
 its majority colour - the same as the game's list.
 """
-import argparse, importlib.util, math, os, re, sys, xml.etree.ElementTree as ET
+import re, argparse, importlib.util, math, os, re, sys, xml.etree.ElementTree as ET
 from collections import Counter
 from PIL import Image
 
@@ -29,7 +29,7 @@ FLOORS = {
 PICK = {'Weaver': (155, 0, 0)}
 # entities the behaviours spawn (not rows of the console): they still need their <entity> in entities2.xml and their art
 SUPPORT = [(160, 461, 0), (160, 771, 0), (160, 773, 0), (160, 760, 2), (155, 0, 1), (155, 0, 2),
-           (1000, 146, 150),                                                      # the Weaver's opening pile
+           (1000, 146, 150), (1000, 94, 160), (1000, 38, 7000),                                                    # the Weaver's opening pile
            (150, 6, 0), (150, 6, 1), (150, 6, 2), (1000, 7014, 0), (1000, 7014, 1), (1000, 667, 0),   # Stinger shots and their poofs, Ransacked's web
            (160, 80, 0), (160, 82, 0), (750, 80, 0),                               # what Ransacked hatches (Dweller, Resident, Sackboy)
            (451, 91, 0), (150, 451, 0), (1000, 1980, 10), (1000, 1980, 11)]        # Dim's Soul, Shirk Spot, Spoop's trail          # Pester's Eternal Fly (orbits it)
@@ -140,6 +140,19 @@ def art_files(ff, a):
     return out, lost
 
 
+# anm2 files that are not an entity's own but that a monster loads from code (Sprite:Load): installed with their sheets
+EXTRA_ART = ['projectiles/projectile_broodEgg.anm2']
+def extra_art(ff):
+    gfx = os.path.join(ff, 'resources', 'gfx'); out = []
+    for rel in EXTRA_ART:
+        if not os.path.exists(os.path.join(gfx, rel)): print('  EXTRA_ART missing in FF: %s' % rel); continue
+        out.append(rel); base = os.path.dirname(rel)
+        for sp in re.findall(r'Spritesheet Path="([^"]*)"', open(os.path.join(gfx, rel), encoding='utf-8', errors='ignore').read()):
+            r = os.path.normpath(os.path.join(base, sp.replace('\\', '/'))).replace('\\', '/')
+            if os.path.exists(os.path.join(gfx, r)): out.append(r)
+    return out
+
+
 def anm2_text(png, boxes):
     T = '\t'
     fr = ''.join(T * 5 + '<Frame XPosition="0" YPosition="0" XPivot="0" YPivot="0" XCrop="%d" YCrop="%d" Width="%d" Height="%d" XScale="100" YScale="100" Delay="%d" Visible="true" RedTint="255" GreenTint="255" BlueTint="255" AlphaTint="255" RedOffset="0" GreenOffset="0" BlueOffset="0" Rotation="0" Interpolated="false"/>\n'
@@ -194,6 +207,7 @@ def main():
         if t is None: continue
         texts.append(t if t.endswith('\n') else t + '\n')
         fs, lost = art_files(o.ff, ents[key]); files += fs
+    files += extra_art(o.ff)
     for f in sorted(set(files)):
         d = os.path.join(gd, f); os.makedirs(os.path.dirname(d), exist_ok=True); shutil.copyfile(os.path.join(o.ff, 'resources', 'gfx', ALIAS.get(f, f)), d)
     dd = os.path.join(o.out, 'assets', 'fiendfolio', 'ffenemies'); os.makedirs(dd, exist_ok=True)
