@@ -49,6 +49,17 @@ static unsigned long en_grid_ent(float x, float y) {
     if (c < 0 || r < 0 || c >= w || r >= h || idx < 0 || idx >= 448) return 0;
     return *(const unsigned long *) (room + 0x30 + (unsigned long) idx * 8);
 }
+/* Isaac.GridSpawn(10, 0, pos, true): a spider web on the tile of pos (Room::SpawnGridEntity 0x59abc4). Only on a tile with no grid entity and no wall: the Lua's forced spawn also replaces rocks. */
+static int en_web_log;
+static int en_web_at(float x, float y) {
+    unsigned long room = g_room ? g_room() : 0;
+    if (!room || !g_grid_spawn || !g_grid_index) { ENLOG(78, 1, "ffenemy: not done: no grid spawn function (webs)"); return 0; }
+    if (en_xy(x, y, 1) || en_grid_ent(x, y)) return 0;
+    float pos[2] = { x, y }; int idx = g_grid_index(room, pos); if (idx < 0 || idx >= 448) return 0;
+    g_grid_spawn(room, idx, 10, 0, (unsigned) xs(&g_seed), 0);
+    if (en_web_log++ < 6) LOG("ffenemy: spider web spawned on tile %d (%.0f,%.0f)", idx, x, y);
+    return 1;
+}
 static int en_grid_type_at(float x, float y) { unsigned long g = en_grid_ent(x, y); return g ? *(const int *) (g + 0x08) : -1; }
 /* the launched-enemy system (ferrium/misc/launchedStuff.lua), one step per AI call: la_hasvel bits 1 = fixed velocity, 2 = collision threshold, 4 = SpriteOffset instead of PositionOffset */
 static void en_launch(en_t *s, float zvel, float accel, int vel, float vx, float vy, int col, float colv, int spriteoff) {
@@ -296,7 +307,8 @@ static void ai_coby(en_t *s, unsigned long e) {
 }
 static void die_coby(en_t *s, unsigned long e) {
     float *p = fpos(e); (void) s;
-    ENLOG(43, 2, "ffenemy: not done: Coby's death webs (Isaac.GridSpawn(10) on its tile and the four around it: the engine's grid spawn is not measured); the Baby Spider is spawned");
+    en_web_at(p[0], p[1]);                                                       /* Isaac.GridSpawn(10) on its tile and the four around it (+40 px, rotated 90 degrees each) */
+    for (int a = 90; a <= 360; a += 90) { float x, y; vrot(40.0f, 0, (float) a, &x, &y); en_web_at(p[0] + x, p[1] + y); }
     en_spawn(85, 962, p[0], p[1], 0, 0, e, 0);
 }
 
@@ -375,17 +387,27 @@ static unsigned long en_shoot_stinger(unsigned long e, float x, float y, float v
     return c;
 }
 static void ai_stinger_homing(en_t *s, unsigned long e);
+static float en_get_rotation(unsigned long e) { return *(const float *) (e + E_SPRITE + 0xe4); }
+/* technical_entities.lua 211 (MC_PRE_NPC_COLLISION of 150.6 sub 0): touching anything it collides with (only the player, PLAYERONLY) = poof + Remove. The contact damage is the
+ * engine's own (collisionDamage 1), dealt in the frame the overlap starts: the poof comes the next update. */
+static int en_touching_player(unsigned long e) {
+    unsigned long pl = g_first_player ? g_first_player() : 0; if (!pl) return 0;
+    float dx = fpos(pl)[0] - fpos(e)[0], dy = fpos(pl)[1] - fpos(e)[1], reach = fsize(pl) + fsize(e);
+    return dx * dx + dy * dy <= reach * reach;
+}
 static void ai_stinger(en_t *s, unsigned long e) {
-    float *p = fpos(e), *v = fvel(e); (void) p;
+    float *p = fpos(e), *v = fvel(e);
     if (s->sub == 1) { ai_stinger_homing(s, e); return; }
     if (!s->init) { s->init = 1; if (s->f[0] <= 0.0f) s->f[0] = vlen(v[0], v[1]); if (!s->i[1]) s->i[1] = 10; s->i[0] = 0; en_sprite_offset(s, e, 0, -15.0f); en_flag_set(e, EF_FLAG_NO_STATUS_EFFECTS | EF_FLAG_NO_TARGET); }
     en_play(s, "Idle");
+    if (en_touching_player(e)) { en_stinger_poof(p[0], p[1], 0, en_get_rotation(e)); en_remove(e); return; }
     if (en_collides_grid(e)) {
         s->i[0]++;
-        if (s->i[0] > s->i[1]) { en_spawn(1000, 7014, p[0], p[1], 0, 0, 0, 0); en_remove(e); ENLOG(45, 1, "ffenemy: not done: the Stinger's SpriteRotation (the rotated sprite; effect 1000.7014 gets none)"); return; }
+        if (s->i[0] > s->i[1]) { en_stinger_poof(p[0], p[1], 0, en_get_rotation(e)); en_remove(e); return; }
         en_sound(FFSND_Ricochet, 1.0f, 1.0f);
     }
     vresize(&v[0], &v[1], s->f[0]);
+    en_set_rotation(e, en_angle_deg(v[0], v[1]));                                /* npc.SpriteRotation = Velocity:GetAngleDegrees() */
 }
 /* Homing stinger 150.6.1 (colonel.lua homingStingerProjectileAI): chases the player, dies with its parent (ref) */
 static void ai_stinger_homing(en_t *s, unsigned long e) {
@@ -394,11 +416,12 @@ static void ai_stinger_homing(en_t *s, unsigned long e) {
     en_sprite_offset(s, e, 0, -15.0f);
     s->f[0] = 8.5f + sinf((float) s->age / 10.0f) * 6.0f;
     en_play(s, "Idle");
-    if (!en_parent_alive(s->ref)) { en_spawn(1000, 7014, p[0], p[1], 0, 0, 0, 1); en_remove(e); return; }
+    if (!en_parent_alive(s->ref)) { en_stinger_poof(p[0], p[1], 1, en_get_rotation(e)); en_remove(e); return; }
     float x = t[0] - p[0], y = t[1] - p[1]; vresize(&x, &y, s->f[0] * 1.0f);
     v[0] = lerpf(v[0], x, s->f[1]); v[1] = lerpf(v[1], y, s->f[1]);
     if (vlen(v[0], v[1]) > 10.0f) vresize(&v[0], &v[1], 10.0f);
-    ENLOG(46, 1, "ffenemy: not done: homing Stinger's looping sound, slowestPlayerSpeed scaling (taken as 1) and SpriteRotation");
+    en_set_rotation(e, en_angle_deg(v[0], v[1]) + 180.0f);
+    ENLOG(46, 1, "ffenemy: not done: homing Stinger's looping sound and slowestPlayerSpeed scaling (taken as 1)");
 }
 
 /* ------------------------------------------------------------------------------------------ Stingler 160.681 (erfly/enemies/stingler.lua): f[0] = d.hurt, cd = StateFrame */

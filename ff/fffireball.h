@@ -73,6 +73,8 @@ static int g_fbl[32];
 #define FBLOG(k, ...) do { if (g_fbl[k]++ < 4) LOG(__VA_ARGS__); } while (0)
 static int (*g_trigger)(int action, int controller);
 static int (*g_has_item)(unsigned long player, int id, int ignore);       /* Player::HasCollectible (0x4eeb74, ffchars.c) */
+static void (*g_set_parent)(unsigned long ent, unsigned long parent);        /* Entity::SetParent 0x82bafc (the Lua's `ent.Parent = other`) */
+static void (*g_load)(void *sprite, const char *path);                    /* Sprite:Load(path, true) (0x89fe24) */
 static void (*g_sheet)(void *sprite, const char *path);                   /* Sprite:ReplaceSpritesheet(0, path) + LoadGraphics (0x8a0228, 0x8a0284: marked.c) */
 #define ITEM_BIRTHRIGHT 619
 #define FB_SHEET_WISP_FIENDISH "gfx/fiend_fireball/wisp_fiendish.png"

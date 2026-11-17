@@ -10,26 +10,47 @@
  * The game has no hook for a projectile dying here: the ones asked for are remembered and, once one is gone from the room, its last position gets the effect. */
 #define PW_N 32
 static struct { unsigned long p; int kind; float x, y; } g_pw[PW_N];
-#define PW_HONEY 1
 static void en_proj_watch(unsigned long p, int kind) {
     if (!p) return;
     for (int k = 0; k < PW_N; k++) if (!g_pw[k].p) { g_pw[k].p = p; g_pw[k].kind = kind; g_pw[k].x = fpos(p)[0]; g_pw[k].y = fpos(p)[1]; return; }
     ENLOG(70, 1, "ffenemy: not done: more than %d watched projectiles at once (the landing effect of the extra ones is dropped)", PW_N);
 }
+/* ferrium/enemies/brood.lua broodProj / broodProjColl: where the egg lands a web grows (a free tile of the room), the hatch sound plays, and - when the spot is open - two
+ * spiders are thrown (EntityNPC.ThrowSpider: they appear on the landing spot) and a white poof (1000.2.2) is left. */
+static void brood_land(float x, float y) {
+    if (en_in_room_walk(x, y, 0.0f) && !en_grid_ent(x, y)) en_web_at(x, y);
+    en_sound(SOUND_BOIL_HATCH, 0.6f, (float) rint_(80, 120) / 100.0f);
+    if (!en_xy(x, y, 0)) {
+        for (int i = 0; i < 2; i++) {
+            float rx, ry; en_rand_vec(&rx, &ry, (float) rint_(50, 100));
+            float sx = x + rx, sy = y + ry; en_clamp_room(&sx, &sy, 10.0f); en_free_tile(&sx, &sy, 120.0f);
+            unsigned long c = en_spawn(85, 0, sx, sy, 0, 0, 0, 0); if (c) en_flag_clear(c, EF_FLAG_APPEAR);
+        }
+        ENLOG(77, 1, "ffenemy: not done: Brood's thrown spiders are only thrown when a path to the player exists (HasPathToPos on a hidden pathfinder), and the white poof's colour");
+    }
+    en_spawn(1000, 2, x, y, 0, 0, 0, 2);
+}
 static void en_proj_tick(void) {
     for (int k = 0; k < PW_N; k++) {
         unsigned long p = g_pw[k].p; if (!p) continue;
         if (alive(p) && *(const int *) (p + E_TYPE) == 9) { g_pw[k].x = fpos(p)[0]; g_pw[k].y = fpos(p)[1]; continue; }
+        { pj_t *pj = pj_find(p); if (pj) pj->p = 0; }                                  /* the address may come back as another projectile: forget its colour entry */
         g_pw[k].p = 0;
+        if (g_pw[k].kind == PW_BROOD) brood_land(g_pw[k].x, g_pw[k].y);
         if (g_pw[k].kind == PW_HONEY) {                                         /* projectiles.lua 534: a wide brown creep (scale 2 x 1.25, honey coloured, 90 frames longer) */
             unsigned long c = en_spawn(1000, EV_CREEP_BROWN, g_pw[k].x, g_pw[k].y, 0, 0, 0, 0);
-            if (c) en_scale(c, 2.0f, 1.25f);
-            ENLOG(71, 1, "ffenemy: not done: HoneyCreep's colour (SetColorize 5.5/3.5/1) and its longer Timeout: the creep is the plain brown one");
+            if (c) { en_scale(c, 2.0f, 1.25f); en_colorize(c, 5.5f, 3.5f, 1.0f, 1.0f); en_fx_add(c, FX_CREEPTINT, 0, 0); }
+            ENLOG(71, 1, "ffenemy: not done: HoneyCreep's Timeout + 90 (the creep lasts as long as a plain brown one)");
         }
     }
 }
 
 /* ------------------------------------------------------------------------------------------ small shared helpers */
+static int en_count_type_var(int type, int variant) {                          /* Isaac.CountEntities(nil, type, variant, 0) */
+    unsigned long snap[SNAP]; unsigned n = snapshot(snap); int c = 0;
+    for (unsigned k = 0; k < n; k++) if (alive(snap[k]) && *(int *) (snap[k] + 0x38) == type && *(int *) (snap[k] + 0x3c) == variant) c++;
+    return c;
+}
 static int en_count_type(int type) {                                           /* mod.GetEntityCount(type) */
     unsigned long snap[SNAP]; unsigned n = snapshot(snap); int c = 0;
     for (unsigned k = 0; k < n; k++) if (alive(snap[k]) && *(int *) (snap[k] + 0x38) == type) c++;
@@ -192,10 +213,55 @@ static void ai_honeyeye(en_t *s, unsigned long e) {
             en_pp_t pp; memset(&pp, 0, sizeof pp);
             pp.has_fspeed = 1; pp.fspeed = -25.0f; pp.has_faccel = 1; pp.faccel = 1.5f; pp.has_scale = 1; pp.scale = 2.0f;
             unsigned long pr = en_shoot_p(e, p[0], p[1], x, y, &pp);
+            if (pr) pj_add(pr, e, PJ_HONEY, 0);
             en_proj_watch(pr, PW_HONEY);
         }
         if (en_finished(s, "Shoot")) { s->state = 0; s->cd = 0; }
     }
+}
+
+/* ------------------------------------------------------------------------------------------ Sackboy 750.80 (xalum/enemies/sackboy.lua), what Ransacked hatches
+ * Walks to the player with the head overlay; now and then plays the overlay "Shoot" and at its frame 18 throws spiders (vanilla spiders 85.0 while they are < 4 per Sackboy,
+ * then Baby Spiders 85.962: the Lua's babyreplace). Dying throws more. EntityNPC.ThrowSpider is not hooked: they appear on the landing spot. */
+static void sackboy_throw(unsigned long e, int type, int variant, int n) {
+    float *p = fpos(e);
+    for (int i = 0; i < n; i++) {
+        float x = p[0] + (float) rint_(-40, 40), y = p[1] + (float) rint_(-40, 40);
+        en_clamp_room(&x, &y, 10.0f);
+        unsigned long c = en_spawn(type, variant, x, y, 0, 0, e, 0);
+        if (c) en_flag_clear(c, EF_FLAG_APPEAR);
+    }
+}
+static void ai_sackboy(en_t *s, unsigned long e) {
+    float *p = fpos(e), *v = fvel(e), *t = en_target(e); if (!t) return;
+    if (!s->init) { s->init = 1; en_overlay(s, "Head"); }
+    en_walk_anim(s, e, "WalkHori", "WalkVert", 0.3f);
+    if (en_overlay_finished(s, "Shoot")) en_overlay(s, "Head");
+    if (!strcmp(s->ov, "Head")) {
+        float tp[2]; en_confuse_pos(s, e, t, tp);
+        if (en_scare_conf(e) || (en_line(p, t, 0) && !en_collides_grid(e))) {
+            float x = tp[0] - p[0], y = tp[1] - p[1]; vresize(&x, &y, en_scared(e) ? -0.5f : 0.5f);
+            v[0] = v[0] * 0.8f + x; v[1] = v[1] * 0.8f + y;
+        } else {
+            en_walk_to(e, t, 0.0f, 3.0f, 0);                                      /* Pathfinder:FindGridPath(target, 3, 1, false) */
+            v[0] *= 1.2f; v[1] *= 1.2f;
+            if (vlen(v[0], v[1]) > 4.0f) vresize(&v[0], &v[1], 4.0f);
+        }
+        if (s->age % 8 == 0 && rint_(1, 20) == rint_(1, 20) && !en_scare_conf(e)) en_overlay(s, "Shoot");
+    } else { v[0] *= 0.9f; v[1] *= 0.9f; }
+    if (!strcmp(s->ov, "Shoot") && s->ovf == 18) {
+        en_sound(SOUND_BOIL_HATCH, 0.85f, 1.0f); en_sound(SOUND_WHEEZY_COUGH, 0.5f, 0.7f);
+        int sackboys = en_count_type_var(750, 80), spiders = en_count_type_var(85, 0);
+        int few = spiders < 4 * sackboys;
+        if (few) sackboy_throw(e, 85, 0, (int) ceilf(frand() * 2.0f));
+        if (!en_flag(e, EF_FLAG_FRIENDLY) || en_count_type_var(85, 962) < 5) sackboy_throw(e, 85, 962, 4 + rint_(1, 3) + (few ? 0 : 3));
+    }
+}
+static void die_sackboy(en_t *s, unsigned long e) {
+    (void) s;
+    en_sound(SOUND_BOIL_HATCH, 0.85f, 1.0f);
+    sackboy_throw(e, 85, 0, (int) floorf(frand() * 3.0f));
+    sackboy_throw(e, 85, 962, 7 + rint_(1, 5));
 }
 
 static const enemy_t g_tab_g5d[] = {
@@ -207,5 +273,6 @@ static const enemy_t g_tab_g5d[] = {
     { 88, 960, ai_walkingsack, die_walkingsack, 0, 0 },
     { 88, 961, ai_walkingsack, die_walkingsack, 0, 0 },
     { 140, 0, ai_honeyeye, 0, 0, 0 },
+    { 750, 80, ai_sackboy, die_sackboy, 0, 0 },
 };
 #define N_TAB_G5D ((int) (sizeof g_tab_g5d / sizeof g_tab_g5d[0]))

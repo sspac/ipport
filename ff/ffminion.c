@@ -126,6 +126,9 @@ static unsigned char *g_base;
 #define FN_GRID_COLLISION 0x59aca0
 static int (*g_grid_index)(unsigned long room, const float *pos);
 static int (*g_grid_class)(unsigned long room, int idx);
+/* Room::SpawnGridEntity 0x59abc4 (measured): int(room, idx, type, variant, seed, varData); the Lua's Isaac.GridSpawn(type, variant, pos, true) = this on the tile of pos. */
+#define FN_GRID_SPAWN 0x59abc4
+static int (*g_grid_spawn)(unsigned long room, int idx, int type, int variant, unsigned seed, int vardata);
 static fn_update o_update;
 static fn_spawn g_spawn;                    /* the host test puts its own here */
 static fn_play g_play;
@@ -875,6 +878,7 @@ static int w_npc_take(unsigned long e, float dmg, unsigned long long flags, void
 #define FN_HAS_COLLECTIBLE_FB 0x4eeb74
 #define FN_SPRITE_REPLACE_FB 0x8a0228      /* Sprite::ReplaceSpritesheet(this, int layer, std::string const *)  - marked.c */
 #define FN_SPRITE_GRAPHICS_FB 0x8a0284     /* Sprite::LoadGraphics(this, 0) */
+#define FN_SPRITE_LOAD 0x89fe24            /* Sprite::Load(this, std::string const *anm2, bool loadGraphics): the Lua's Sprite:Load(path, true); seen called with 'gfx/ui/minimap1.anm2', (x20=sprite+0x18, str, 1) at 0x577b5c */
 void *shim_str_assign(void *self, const char *s);
 void shim_str_dtor(void *self);
 static void fb_real_sheet(void *sprite, const char *path) {
@@ -884,6 +888,13 @@ static void fb_real_sheet(void *sprite, const char *path) {
     ((void (*)(void *, int, const void *)) (g_base + FN_SPRITE_REPLACE_FB))(sprite, 0, str);
     shim_str_dtor(str);
     ((void (*)(void *, int)) (g_base + FN_SPRITE_GRAPHICS_FB))(sprite, 0);
+}
+static void fb_real_load(void *sprite, const char *path) {
+    long long raw[3]; unsigned char *str = (unsigned char *) raw;
+    str[23] = 0;
+    shim_str_assign(str, path);
+    ((void (*)(void *, const void *, int)) (g_base + FN_SPRITE_LOAD))(sprite, str, 1);
+    shim_str_dtor(str);
 }
 static int fb_real_trigger(int action, int controller) { return ((int (*)(unsigned long, int, int)) (g_base + FN_TRIGGERED))(0, action, controller) & 1; }
 static void take_slot(const char *name, unsigned long vt, int slot, unsigned long expect, void *mine, void **orig) {
@@ -904,6 +915,7 @@ void shim_ffminion_install(unsigned char *base) {
     g_base = base;
     g_grid_index = (int (*)(unsigned long, const float *)) (base + FN_GRID_INDEX);
     g_grid_class = (int (*)(unsigned long, int)) (base + FN_GRID_COLLISION);
+    g_grid_spawn = (int (*)(unsigned long, int, int, int, unsigned, int)) (base + FN_GRID_SPAWN);
     g_setframe = (fn_setframe) (g_base + FN_SPRITE_SETFRAME); g_setoframe = (fn_setframe) (g_base + 0x89ee7c); g_sprupd = (fn_sprupd) (g_base + 0x89d598); g_spawn = real_spawn; g_play = real_play; g_overlay = real_overlay; g_remove_overlay = real_remove_overlay; g_list_now = shim_eid_list_now; g_readable = shim_eid_readable;
     g_seed ^= (unsigned) now_ms();
     o_update = (fn_update) *slot;
@@ -912,6 +924,8 @@ void shim_ffminion_install(unsigned char *base) {
     g_trigger = fb_real_trigger; g_frame_fn = fb_real_frame;
     g_has_item = (int (*)(unsigned long, int, int)) (g_base + FN_HAS_COLLECTIBLE_FB);
     g_sheet = fb_real_sheet;
+    g_load = fb_real_load;
+    g_set_parent = (void (*)(unsigned long, unsigned long)) (g_base + 0x82bafc);
     take_slot("Player::Update", PLAYER_VTABLE, 4, FN_PLAYER_UPDATE, (void *) w_player_update, (void **) &o_player_update);
     take_slot("Familiar::Update", FAMILIAR_VTABLE, 4, FN_FAMILIAR_UPDATE, (void *) w_familiar_update, (void **) &o_familiar_update);
     take_slot("NPC::Update", NPC_VTABLE, 4, FN_NPC_UPDATE, (void *) w_npc_update, (void **) &o_npc_update);

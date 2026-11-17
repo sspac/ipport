@@ -19,7 +19,7 @@ static int g_enlog[200], g_ensweep;
 #define EN_N 96
 typedef struct {
     unsigned long e; unsigned key; int type, variant, sub;
-    int init, age, state, cd, cd2, af, dead_done, dir;
+    int init, age, state, cd, cd2, af, dead_done, dead_age, dir;
     char anim[32], ov[32]; int alen, aloop, ovf;
     float f[12]; int i[12]; unsigned long ref, ref2, ref3; int nocarry, hurt_block;
     float po[2]; int la_on, la_hasvel; float la_z, la_acc, la_h, la_vx, la_vy, la_col;   /* Entity.PositionOffset the AI asked for (added to the SpriteOffset) and the launched-enemy state (ferrium/misc/launchedStuff.lua) */
@@ -161,6 +161,21 @@ static unsigned long en_spawn(int type, int variant, float x, float y, float vx,
     float p[2] = { x, y }, v[2] = { vx, vy };
     return g_spawn(en_game(), type, variant, p, v, spawner, sub, 0, 0);
 }
+/* Isaac.Spawn(1000, EffectVariant.SHOCKWAVE (61), ...) with Parent/MinRadius/MaxRadius/Timeout. Measured at the game's own spawn sites (0x50b758, 0x52127c,
+ * 0x5ef94c...): after Game::Spawn it calls Entity::SetParent(effect, owner) 0x82bafc and stores MinRadius +0x44c (float), MaxRadius +0x450 (float) and the Timeout
+ * twice, +0x454 and +0x458 (int, the countdown and its reload). The game's Effect::Update then runs the ring: it breaks rocks and hurts whatever is inside. */
+#define OFF_EFF_MINRADIUS 0x44c
+#define OFF_EFF_MAXRADIUS 0x450
+#define OFF_EFF_TIMEOUT   0x454
+#define OFF_EFF_TIMEOUT2  0x458
+static unsigned long en_shockwave(unsigned long owner, float x, float y, float minr, float maxr, int timeout) {
+    unsigned long w = en_spawn(1000, 61, x, y, 0, 0, owner, 0);
+    if (!w) return 0;
+    if (g_set_parent) g_set_parent(w, owner);
+    *(float *) (w + OFF_EFF_MINRADIUS) = minr; *(float *) (w + OFF_EFF_MAXRADIUS) = maxr;
+    *(int *) (w + OFF_EFF_TIMEOUT) = timeout; *(int *) (w + OFF_EFF_TIMEOUT2) = timeout;
+    return w;
+}
 /* NPC:FireProjectiles for one shot: Game::Spawn(9, Variant, ...) with the velocity, then the params' fields written on the new projectile */
 static unsigned long en_shoot_p(unsigned long e, float x, float y, float vx, float vy, const en_pp_t *pp) {
     float m = pp && pp->vel_multi > 0 ? pp->vel_multi : 1.0f;
@@ -254,7 +269,12 @@ static void ai_slobber(en_t *s, unsigned long e) {
     if (!s->init) { s->init = 1; s->state = 0; s->cd = 20 + (int) rnd(11); s->cd2 = 80 + (int) rnd(16); }
     if (s->age % 8 == 0 && s->age > 1) {
         unsigned long c = s->variant == 2100 ? en_spawn(1000, 94, p[0], p[1], 0, 0, e, 160) : en_spawn(1000, 22, p[0], p[1], 0, 0, e, 0);
-        if (c) { float *sc = (float *) (c + E_SPRITE + 0xdc); sc[0] *= 0.75f; sc[1] *= 0.75f; }
+        if (c) {
+            float *sc = (float *) (c + E_SPRITE + 0xdc); sc[0] *= 0.75f; sc[1] *= 0.75f;
+            /* FF's row 1000.94.160 is "Slippery Blue Creep" (effects/Blue Creep.anm2 + effect_waterpool.png). The game showed it brown (ff-codigo46/47 videos): the sheet is also set from here, as
+             * slobber.lua does for the friendly one (ReplaceSpritesheet(0, "gfx/effects/effect_waterpool.png") + LoadGraphics) - the vanilla water creep sheet, blue. */
+            if (s->variant == 2100 && g_sheet) g_sheet((void *) (c + E_SPRITE), "gfx/effects/effect_waterpool.png");
+        }
     }
     if (s->state == 0) {
         g_play((void *) (e + E_SPRITE), v[0] * v[0] > v[1] * v[1] ? "WalkHori" : "WalkVert", 0);       /* AnimWalkFrame */
@@ -593,7 +613,7 @@ static unsigned long en_morph(unsigned long e, int type, int variant, int sub) {
 /* ------------------------------------------------------------------------------------------ projectiles that a monster keeps (Entity_Projectile vtable 0xa8dc68, slot 4 = Projectile::Update 0x677fd0) */
 #define PJ_N 48
 typedef struct { unsigned long p, parent; int kind; float a, b; } pj_t;
-enum { PJ_MUTANT_ORBITAL = 1 };
+enum { PJ_MUTANT_ORBITAL = 1, PJ_HONEY = 2, PJ_BROOD = 3 };
 static pj_t g_pj[PJ_N];
 static fn_update o_proj_update;
 static void pj_add(unsigned long p, unsigned long parent, int kind, float a) {
@@ -601,6 +621,7 @@ static void pj_add(unsigned long p, unsigned long parent, int kind, float a) {
     g_pj[f].p = p; g_pj[f].parent = parent; g_pj[f].kind = kind; g_pj[f].a = a; g_pj[f].b = 0;
 }
 static pj_t *pj_find(unsigned long p) { for (int i = 0; i < PJ_N; i++) if (g_pj[i].p == p) return &g_pj[i]; return 0; }
+static void en_paint(unsigned long e, float tr, float tg, float tb, float ta, float cr, float cg, float cb, float ca, float orr, float og, float ob);
 static void w_proj_update(unsigned long e) {
     pj_t *j = g_en_on ? pj_find(e) : 0;
     if (j && *(const unsigned char *) (e + E_EXISTS) && j->kind == PJ_MUTANT_ORBITAL) {
@@ -624,6 +645,8 @@ static void w_proj_update(unsigned long e) {
         }
     }
     o_proj_update(e);
+    if (j && j->kind == PJ_BROOD && *(const unsigned char *) (e + E_EXISTS)) { if (++j->a > 2.0f && proj_flags_ok()) *(unsigned long long *) (e + OFF_PROJ_FLAGS) &= ~PF_NO_WALL_COLLIDE; }   /* broodProj: v.FrameCount > 2 -> ClearProjectileFlags(NO_WALL_COLLIDE) */
+    if (j && j->kind == PJ_HONEY && *(const unsigned char *) (e + E_EXISTS)) en_paint(e, 1, 1, 1, 1, 1, 1, 1, 1, 0.7f, 0.4f, 0.0f);   /* FiendFolio.ColorHoneyYellow = Color(1,1,1,1, 0.7,0.4,0) + SetColorize(1,1,1,1): the projectile's colour, kept after every engine update */
 }
 
 /* The Weaver's opening pile (weaver.lua: Spawn(1000, 146), dirt:Load("gfx/enemies/weaver/weaver.anm2", true), weaverDirtPileOpeningAI = play "Ground", Remove when finished).
@@ -638,6 +661,56 @@ static void en_pile_open(float x, float y, unsigned long spawner) {
     for (int k = 0; k < PILE_N; k++) if (!g_pile[k].e || !alive(g_pile[k].e)) { g_pile[k].e = c; g_pile[k].age = 0; return; }
     en_remove(c);                                                                          /* no free slot: do not leave a pile nobody will remove */
 }
+
+/* ------------------------------------------------------------------------------------------ colours and rotation of a sprite (measured: ffchars.c, fffireball.h)
+ * The sprite's Color is 11 floats at sprite+0xe8: tint rgba, colorize rgba (+0xf8), offset rgb (+0x108). SpriteRotation is the float at sprite+0xe4 (degrees). */
+static void en_paint(unsigned long e, float tr, float tg, float tb, float ta, float cr, float cg, float cb, float ca, float orr, float og, float ob) {
+    float *c = (float *) (e + E_SPRITE + 0xe8);
+    c[0] = tr; c[1] = tg; c[2] = tb; c[3] = ta; c[4] = cr; c[5] = cg; c[6] = cb; c[7] = ca; c[8] = orr; c[9] = og; c[10] = ob;
+}
+static void en_colorize(unsigned long e, float cr, float cg, float cb, float ca) {      /* Color:SetColorize only: the engine's own fade of the tint alpha stays */
+    float *c = (float *) (e + E_SPRITE + 0xf8); c[0] = cr; c[1] = cg; c[2] = cb; c[3] = ca;
+}
+static void en_set_rotation(unsigned long e, float deg) { *(float *) (e + E_SPRITE + 0xe4) = deg; }
+static float en_angle_deg(float x, float y) { return atan2f(y, x) * 180.0f / 3.14159265f; }     /* Vector:GetAngleDegrees() */
+
+/* ------------------------------------------------------------------------------------------ effects that have a Lua update of their own (MC_POST_EFFECT_UPDATE)
+ * The port's monster hook runs from the NPC update only, so an effect whose variant the engine has no code for would sit on its anm2's first animation for ever. The ones the
+ * Lua animates are remembered here and stepped once per game frame (en_piles_tick): the frame is set directly (SetFrame clears the Playing byte, so the engine never advances it twice). */
+#define FX_N 64
+enum { FX_POOF = 1, FX_WEBCORPSE, FX_CREEPTINT };
+static struct { unsigned long e; int kind, age, len; float a; } g_fx[FX_N];
+static unsigned long en_fx_add(unsigned long e, int kind, int len, float a) {
+    if (!e) return 0;
+    for (int k = 0; k < FX_N; k++) if (!g_fx[k].e || !alive(g_fx[k].e)) { g_fx[k].e = e; g_fx[k].kind = kind; g_fx[k].age = 0; g_fx[k].len = len; g_fx[k].a = a; return e; }
+    ENLOG(73, 1, "ffenemy: not done: more than %d tracked effects at once (the extra one is dropped: %d)", FX_N, kind);
+    if (kind == FX_POOF) en_remove(e);
+    return 0;
+}
+/* colonel.lua 658 / homer.lua 137 / technical_entities.lua 213: Isaac.Spawn(1000, 7014, sub, pos), SpriteRotation = the shot's, then checkStingerPoof (erfly/main.lua 1460): SpriteOffset (0,-15), play "Poof", Remove when finished */
+static void en_stinger_poof(float x, float y, int sub, float rot) {
+    unsigned long f = en_spawn(1000, 7014, x, y, 0, 0, 0, sub); if (!f) return;
+    en_set_rotation(f, rot);
+    if (g_play) g_play((void *) (f + E_SPRITE), "Poof", 1);
+    en_fx_add(f, FX_POOF, sub ? 11 : 9, rot);
+}
+static void en_fx_tick(void) {
+    for (int k = 0; k < FX_N; k++) {
+        unsigned long f = g_fx[k].e; if (!f) continue;
+        if (!alive(f)) { g_fx[k].e = 0; continue; }
+        if (g_fx[k].kind == FX_POOF) {
+            if (ent_spriteoff_ok()) { *(float *) (f + OFF_ENT_SPRITEOFFSET) = 0.0f; *(float *) (f + OFF_ENT_SPRITEOFFSET + 4) = -15.0f; }
+            if (++g_fx[k].age >= g_fx[k].len) { en_remove(f); g_fx[k].e = 0; continue; }
+            en_set_rotation(f, g_fx[k].a);
+            if (g_setframe) g_setframe((void *) (f + E_SPRITE), "Poof", g_fx[k].age);
+        } else if (g_fx[k].kind == FX_WEBCORPSE) {                                   /* ransackedwebai: play "webcorpse", DepthOffset 1, Offset 0 */
+            if (g_setframe) g_setframe((void *) (f + E_SPRITE), "webcorpse", 0);
+            en_spr_off(f, 0.0f, 0.0f);
+        } else if (g_fx[k].kind == FX_CREEPTINT) {                                   /* HoneyCreep: colorize 5.5 3.5 1 1 (the creep's own tint alpha fades by itself) */
+            en_colorize(f, 5.5f, 3.5f, 1.0f, 1.0f);
+        }
+    }
+}
 static void en_proj_tick(void);
 static void en_piles_tick(void) {
     static int last = -2; int fr = g_frame_fn ? g_frame_fn() : -1;
@@ -648,8 +721,12 @@ static void en_piles_tick(void) {
         if (++g_pile[k].age >= PILE_LEN) { en_remove(c); g_pile[k].e = 0; }
         else if (g_setframe) g_setframe((void *) (c + E_SPRITE), "Ground", g_pile[k].age);
     }
+    en_fx_tick();
     en_proj_tick();
 }
+#define PW_HONEY 1
+#define PW_BROOD 2
+static void en_proj_watch(unsigned long p, int kind);
 #include "ffen_g1.h"
 #include "ffen_g2.h"
 #include "ffen_g3.h"
@@ -831,7 +908,10 @@ static void w_npc_update(unsigned long e) {
         vb[0] = fvel(e)[0]; vb[1] = fvel(e)[1];
         if (en_dead(e)) {
             if (!s->dead_done) { s->dead_done = 1; ENLOG(0, 24, "ffenemy: %d.%d dies (frame %d)", type, s->variant, s->age); if (d->die) d->die(s, e); }
-            s = 0;                                                  /* the corpse is left to the engine */
+            /* the corpse is left to the engine. A monster the engine has no death code for (the Lua kills it with npc:Kill() and the engine waits for a "Death" animation these
+             * anm2 files do not have) would stay for ever: alive, unhittable and counted by the room's clear check (ff-codigo47's bee). After 75 frames it is removed. */
+            if (++s->dead_age == 75) { ENLOG(74, 24, "ffenemy: %d.%d was still in the room 75 frames after dying (HP <= 0): removed", type, s->variant); en_remove(e); }
+            s = 0;
         } else {
             if (d->ai) d->ai(s, e);
         }

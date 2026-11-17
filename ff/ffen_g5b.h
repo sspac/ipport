@@ -120,7 +120,7 @@ static void ai_honeydrip(en_t *s, unsigned long e) {
         else if (en_playing(s, "Slam") && s->af == 10) en_sound(FFSND_BeeBuzzDown, 1.0f, (float) rint_(140, 150) / 100.0f);
         else if (en_event(s, "Slam", "Slam")) {
             en_sound(SOUND_HELLBOSS_GROUNDPOUND, 0.7f, (float) rint_(165, 175) / 100.0f);
-            ENLOG(50, 1, "ffenemy: not done: Honeydrip's shockwave (effect 61 with MinRadius 20 / MaxRadius 40 / Timeout 2: the effect's radius fields are not measured)");
+            en_shockwave(e, p[0], p[1], 20.0f, 40.0f, 2);                /* wave.Parent = npc, MinRadius 20, MaxRadius 40, Timeout 2 */
         } else if (en_event(s, "Slam", "GetOut")) {
             en_sound(SOUND_PLOP, 0.7f, (float) rint_(8, 12) / 10.0f);
             if (en_count(256, -1) < 7) {

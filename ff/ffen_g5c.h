@@ -22,17 +22,21 @@ static void ai_ransacked(en_t *s, unsigned long e) {
     else en_play(s, "hatch");
     if (en_event(s, s->state == 2 ? "hatch" : s->anim, "hatch")) {
         if (s->sub == 0) {                                                      /* ransackedtable: Sackboy 20, Bony 30, Dweller 20, Resident 10 */
-            int r = (int) rnd(80), ty, va;
-            if (r < 20) { ty = 750; va = 80; } else if (r < 50) { ty = 227; va = 0; } else if (r < 70) { ty = 160; va = 80; } else { ty = 160; va = 82; }
+            /* the Lua's table: Sackboy 20, Bony 30, Dweller 20, Resident 10. Dweller (erfly/enemies/dweller.lua, 1400 lines) and Resident (guwah/enemies/resident.lua) are not ported: hatching one
+             * would give a monster with no behaviour, so only the other two are drawn until they are (their weights 20 : 30 kept). */
+            int r = (int) rnd(50), ty, va;
+            if (r < 20) { ty = 750; va = 80; } else { ty = 227; va = 0; }
+            ENLOG(51, 1, "ffenemy: not done: Ransacked never hatches Dweller / Resident (not ported yet): Sackboy 20 : Bony 30");
             unsigned long c = en_spawn(ty, va, p[0], p[1], 0, 0, e, 0); if (c) en_flag_clear(c, EF_FLAG_APPEAR);
-            ENLOG(51, 1, "ffenemy: Ransacked hatches Sackboy/Dweller/Resident whose own AI is not in the port yet (their rows are installed, they act as the engine's default)");
         }
-        en_spawn(1000, 667, p[0], p[1] - 8.0f, 0, 0, e, 0);
+        { unsigned long w = en_spawn(1000, 667, p[0], p[1] - 8.0f, 0, 0, e, 0); if (w) { if (g_setframe) g_setframe((void *) (w + E_SPRITE), "webcorpse", 0); en_fx_add(w, FX_WEBCORPSE, 0, 0); } }
         en_kill(e);
     }
 }
-/* the web effect left behind (ransackedwebai): plays "webcorpse" */
-static void ai_ransacked_web(en_t *s, unsigned long e) { (void) e; en_play(s, "webcorpse"); }
+
+/* Ransacked has no "Death" animation (its anm2: idle, quiver, hatch, Appear, webcorpse), so a dead one -- hatched (npc:Kill()) or shot -- would hang on screen showing its last
+ * frame until the 75-frame safeguard. The Lua leaves only the web corpse (a separate effect), so the NPC is removed the moment it dies. */
+static void die_ransacked(en_t *s, unsigned long e) { (void) s; ENLOG(79, 1, "ffenemy: Ransacked died: its sprite is removed (the web corpse effect stays)"); en_remove(e); }
 
 /* ------------------------------------------------------------------------------------------ Marge 666.180 (mini/enemies/marge.lua): f[0] = confuseangle (degrees) */
 static void die_marge(en_t *s, unsigned long e) {
@@ -87,9 +91,16 @@ static void ai_brood(en_t *s, unsigned long e) {
         else if (en_event(s, "Toss", "Toss")) {
             en_pp_t pp; memset(&pp, 0, sizeof pp);
             en_sound(SOUND_ANGEL_WING, 0.4f, (float) rint_(120, 130) / 100.0f);
-            pp.variant = 8; pp.has_fspeed_mod = 1; pp.fspeed_mod = -25.0f; pp.has_faccel_mod = 1; pp.faccel_mod = 1.0f;
-            en_shoot_p(e, p[0], p[1] - 10.0f, (t[0] - p[0]) * 0.03f, (t[1] - p[1]) * 0.03f, &pp);
-            ENLOG(53, 1, "ffenemy: not done: Brood's egg sprite (projectile_broodEgg.anm2 via Sprite::Load), NO_WALL_COLLIDE for 2 frames and what happens when it lands: the web grid entity and the two thrown spiders (projectile death and EntityNPC.ThrowSpider are not hooked)");
+            pp.variant = 8; pp.has_fspeed = 1; pp.fspeed = -25.0f; pp.has_faccel = 1; pp.faccel = 1.0f;     /* proj.FallingAccel = 1; proj.FallingSpeed = -25 */
+            pp.flags = PF_NO_WALL_COLLIDE;
+            { unsigned long pr = en_shoot_p(e, p[0], p[1] - 10.0f, (t[0] - p[0]) * 0.03f, (t[1] - p[1]) * 0.03f, &pp);
+              if (pr) {
+                  if (g_load) { g_load((void *) (pr + E_SPRITE), "gfx/projectiles/projectile_broodEgg.anm2"); if (g_play) g_play((void *) (pr + E_SPRITE), "Projectile", 1); }   /* pSprite:Load(...) + Play("Projectile", true) */
+                  else ENLOG(53, 1, "ffenemy: not done: Sprite::Load is not installed: the egg shot has the default projectile sprite");
+                  pj_add(pr, e, PJ_BROOD, 0);
+                  if (en_flag(e, EF_FLAG_FRIENDLY)) ENLOG(54, 1, "ffenemy: not done: a friendly/charmed Brood's egg (CANT_HIT_PLAYER | HIT_ENEMIES, no web)");
+              }
+              en_proj_watch(pr, PW_BROOD); }
         } else en_play(s, "Toss");
         v[0] = lerpf(v[0], 0, 0.1f); v[1] = lerpf(v[1], 0, 0.1f);
     } else {
@@ -373,8 +384,7 @@ static const enemy_t g_tab_g5[] = {
     { 160, 401, ai_zingling, 0, 0, 0 },
     { 160, 610, ai_hover, 0, 0, 0 },
     { 160, 810, ai_honeydrip, 0, 0, 0 },
-    { 666, 70, ai_ransacked, 0, 0, 0 },
-    { 1000, 667, ai_ransacked_web, 0, 0, 0 },
+    { 666, 70, ai_ransacked, die_ransacked, 0, 0 },
     { 666, 180, ai_marge, die_marge, 0, 0 },
     { 114, 26, ai_brood, 0, 0, 0 },
     { 160, 1390, ai_receptor, 0, 0, 0 },
