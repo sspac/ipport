@@ -128,6 +128,17 @@ void ffsound_play(int id, float vol, float pitch) {
     engine_sound(id, vol, pitch);
 }
 
+/* a looping sound and its Stop (sfx:Play(id, vol, 0, true, pitch) / sfx:Stop(id)): SFXManager::Stop is 0x7f0c5c (this, int id: stops every playing sample of the sound, measured) */
+#define FN_SFX_STOP 0x7f0c5c
+void ffsound_loop(int id, float vol, float pitch) {
+    if (!o_sfx || !g_mgr) return;
+    g_own++; o_sfx(g_mgr, id, 0, 1, vol, pitch, 0.0f); g_own--;
+}
+void ffsound_stop(int id) {
+    if (!g_base || !g_mgr) return;
+    ((void (*)(unsigned long, int)) (g_base + FN_SFX_STOP))(g_mgr, id);
+}
+
 static int ff_char(void) {                       /* the first player's character if it is a Fiend Folio one, else 0 */
     if (!g_base) return 0;
     unsigned long game = *(const unsigned long *) (g_base + GAME_PTR);

@@ -9,12 +9,14 @@
 /* ------------------------------------------------------------------------------------------ a projectile whose landing leaves something (ProjectileCallbacks Death)
  * The game has no hook for a projectile dying here: the ones asked for are remembered and, once one is gone from the room, its last position gets the effect. */
 #define PW_N 32
-static struct { unsigned long p; int kind; float x, y; } g_pw[PW_N];
-static void en_proj_watch(unsigned long p, int kind) {
+static struct { unsigned long p, owner; int kind; float x, y, a, b; } g_pw[PW_N];
+static void en_proj_watch2(unsigned long p, int kind, unsigned long owner, float a, float b) {
     if (!p) return;
-    for (int k = 0; k < PW_N; k++) if (!g_pw[k].p) { g_pw[k].p = p; g_pw[k].kind = kind; g_pw[k].x = fpos(p)[0]; g_pw[k].y = fpos(p)[1]; return; }
+    for (int k = 0; k < PW_N; k++) if (!g_pw[k].p) { g_pw[k].p = p; g_pw[k].kind = kind; g_pw[k].owner = owner; g_pw[k].a = a; g_pw[k].b = b; g_pw[k].x = fpos(p)[0]; g_pw[k].y = fpos(p)[1]; return; }
     ENLOG(70, 1, "ffenemy: not done: more than %d watched projectiles at once (the landing effect of the extra ones is dropped)", PW_N);
 }
+static void en_proj_watch(unsigned long p, int kind) { en_proj_watch2(p, kind, 0, 0, 0); }
+static void en_coal_land(int kind, unsigned long owner, float x, float y, float a, float b);
 /* ferrium/enemies/brood.lua broodProj / broodProjColl: where the egg lands a web grows (a free tile of the room), the hatch sound plays, and - when the spot is open - two
  * spiders are thrown (EntityNPC.ThrowSpider: they appear on the landing spot) and a white poof (1000.2.2) is left. */
 static void brood_land(float x, float y) {
@@ -37,6 +39,7 @@ static void en_proj_tick(void) {
         { pj_t *pj = pj_find(p); if (pj) pj->p = 0; }                                  /* the address may come back as another projectile: forget its colour entry */
         g_pw[k].p = 0;
         if (g_pw[k].kind == PW_BROOD) brood_land(g_pw[k].x, g_pw[k].y);
+        if (g_pw[k].kind >= 3) en_coal_land(g_pw[k].kind, g_pw[k].owner, g_pw[k].x, g_pw[k].y, g_pw[k].a, g_pw[k].b);
         if (g_pw[k].kind == PW_HONEY) {                                         /* projectiles.lua 534: a wide brown creep (scale 2 x 1.25, honey coloured, 90 frames longer) */
             unsigned long c = en_spawn(1000, EV_CREEP_BROWN, g_pw[k].x, g_pw[k].y, 0, 0, 0, 0);
             if (c) { en_scale(c, 2.0f, 1.25f); en_colorize(c, 5.5f, 3.5f, 1.0f, 1.0f); en_fx_add(c, FX_CREEPTINT, 0, 0); }

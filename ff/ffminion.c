@@ -237,6 +237,17 @@ static int target_level(const unsigned long *snap, unsigned n, int *count) {
     return -1;
 }
 
+#ifndef FB_REF_SOURCE
+#define FB_REF_SOURCE 0x28                                        /* EntityRef: the source entity (same value as fffireball.h) */
+#endif
+static int hit_enemy_f(unsigned long e, float damage, unsigned long long flags, unsigned long src) {
+    static unsigned char ref[0x100];                          /* an EntityRef: the source entity at FB_REF_SOURCE (the Lua's EntityRef(fire)) */
+    memset(ref, 0, sizeof ref);
+    if (src) *(unsigned long *) (ref + FB_REF_SOURCE) = src;
+    const unsigned long *vt = *(const unsigned long *const *) e;
+    if (!vt) return 0;
+    return ((fn_take) vt[VT_TAKE_DAMAGE / 8])(e, damage, flags, ref, 0);
+}
 static int hit_enemy(unsigned long e, float damage) {
     static unsigned char ref[0x100];                          /* an EntityRef with no source: type 0, entity 0 */
     memset(ref, 0, sizeof ref);
@@ -867,6 +878,7 @@ static void w_familiar_update(unsigned long f) {
 }
 static int w_npc_take(unsigned long e, float dmg, unsigned long long flags, void *ref, int cd) {
     float before[HP_N];
+    g_hit_flags = flags; g_hit_src = (ref && g_readable(ref, 0x30)) ? *(const unsigned long *) ((unsigned char *) ref + FB_REF_SOURCE) : 0;     /* what the Lua's Hurt callbacks get as flag / source */
     if (en_hurt(e, dmg)) return 0;
     int have = fb_pre_hit(e, before);
     float vel0[2]; ht_before(e, dmg, flags, vel0);
@@ -886,6 +898,14 @@ static void fb_real_sheet(void *sprite, const char *path) {
     str[23] = 0;
     shim_str_assign(str, path);
     ((void (*)(void *, int, const void *)) (g_base + FN_SPRITE_REPLACE_FB))(sprite, 0, str);
+    shim_str_dtor(str);
+    ((void (*)(void *, int)) (g_base + FN_SPRITE_GRAPHICS_FB))(sprite, 0);
+}
+static void fb_real_sheet_l(void *sprite, int layer, const char *path) {
+    long long raw[3]; unsigned char *str = (unsigned char *) raw;
+    str[23] = 0;
+    shim_str_assign(str, path);
+    ((void (*)(void *, int, const void *)) (g_base + FN_SPRITE_REPLACE_FB))(sprite, layer, str);
     shim_str_dtor(str);
     ((void (*)(void *, int)) (g_base + FN_SPRITE_GRAPHICS_FB))(sprite, 0);
 }
@@ -925,6 +945,7 @@ void shim_ffminion_install(unsigned char *base) {
     g_has_item = (int (*)(unsigned long, int, int)) (g_base + FN_HAS_COLLECTIBLE_FB);
     g_sheet = fb_real_sheet;
     g_load = fb_real_load;
+    g_sheet_l = fb_real_sheet_l;
     g_set_parent = (void (*)(unsigned long, unsigned long)) (g_base + 0x82bafc);
     take_slot("Player::Update", PLAYER_VTABLE, 4, FN_PLAYER_UPDATE, (void *) w_player_update, (void **) &o_player_update);
     take_slot("Familiar::Update", FAMILIAR_VTABLE, 4, FN_FAMILIAR_UPDATE, (void *) w_familiar_update, (void **) &o_familiar_update);

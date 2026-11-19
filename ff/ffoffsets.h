@@ -23,7 +23,7 @@
 #define OFF_PROJ_SCALE 0x410   /* float. Projectile::Update 0x678088: frame = clamp(3*[+0x410]+3, .., 13) picks the sprite size */
 #define OFF_PROJ_CURVING 0
 #define OFF_PROJ_HOMING 0
-#define OFF_EFF_TIMEOUT 0
+#define OFF_EFF_TIMEOUT 0x454   /* int. Effect Timeout (and its reload at +0x458): the game's own creep spawn sites (0x5e2700: movi v0.2s,#0x1e; str d0,[x+0x454]) and the shockwave ones (0x50b758, 0x52127c) store the same number in both */
 #define OFF_EFF_LIFESPAN 0
 #define OFF_EFF_SCALE 0
 #define OFF_NPC_CANSHUTDOORS 0x384   /* byte, INVERTED (1 = does not shut doors / is not an active enemy): Entity::IsActiveEnemy 0x82dca8 returns false when [+0x384] != 0 (after the type range 10..0x3e7 and EntityCollisionClass >= 2 tests) */

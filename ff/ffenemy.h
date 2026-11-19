@@ -14,7 +14,7 @@
  */
 #include "ffanim_table.h"
 
-static int g_enlog[200], g_ensweep;
+static int g_enlog[400], g_ensweep;
 #define ENLOG(k, n, ...) do { if (g_enlog[k]++ < (n)) LOG(__VA_ARGS__); } while (0)
 #define EN_N 96
 typedef struct {
@@ -24,10 +24,12 @@ typedef struct {
     float f[12]; int i[12]; unsigned long ref, ref2, ref3; int nocarry, hurt_block;
     float po[2]; int la_on, la_hasvel; float la_z, la_acc, la_h, la_vx, la_vy, la_col;   /* Entity.PositionOffset the AI asked for (added to the SpriteOffset) and the launched-enemy state (ferrium/misc/launchedStuff.lua) */
     float so[2]; int so_on;                                               /* the SpriteOffset the AI asked for, re-applied after the engine's update */
-    float lastreal; int stuck, driven;                                   /* en_sprite_sync: the engine's own frame last tick, how long it has not moved, and whether the port sets the frame itself */
+    int flaming; float lastreal; int stuck, driven;                                   /* en_sprite_sync: the engine's own frame last tick, how long it has not moved, and whether the port sets the frame itself */
 } en_t;
 static en_t g_en[EN_N];
 static int g_en_on = 1;
+static unsigned long long g_hit_flags; static unsigned long g_hit_src;           /* the flag and the source entity of the hit the TakeDamage hook is looking at (the Lua Hurt callbacks' flag, source) */
+#define DMG_FIRE 2ull
 
 static const ffa_t *ffa_find(unsigned key, const char *name) {
     for (const ffa_t *a = ffa_tab; a->name; a++) if (a->key == key && !strcmp(a->name, name)) return a;
@@ -133,6 +135,16 @@ static int en_charmed(unsigned long e) { return en_flag(e, EF_FLAG_CHARM); }
 /* the port's sound player (ffsound.c): sound id (vanilla enum or FFSND_*), volume, pitch */
 void ffsound_play(int id, float vol, float pitch);
 static void en_sound(int id, float vol, float pitch) { ffsound_play(id, vol, pitch); }
+void ffsound_loop(int id, float vol, float pitch);
+void ffsound_stop(int id);
+/* sfx:Play(id, vol, 0, true, pitch) guarded by `not sfx:IsPlaying(id)`: the port keeps the on/off itself (a bit per sound id slot, 8 loops are enough) */
+static int g_loop_on[8], g_loop_id[8]; static unsigned long g_loop_owner[8];
+static int en_loop_playing(int id) { for (int k = 0; k < 8; k++) if (g_loop_on[k] && g_loop_id[k] == id) return 1; return 0; }
+static void en_loop_start(int id, float vol, float pitch, unsigned long owner) {
+    if (en_loop_playing(id)) return;
+    for (int k = 0; k < 8; k++) if (!g_loop_on[k]) { g_loop_on[k] = 1; g_loop_id[k] = id; g_loop_owner[k] = owner; ffsound_loop(id, vol, pitch); return; }
+}
+static void en_loop_stop(int id) { for (int k = 0; k < 8; k++) if (g_loop_on[k] && g_loop_id[k] == id) { g_loop_on[k] = 0; ffsound_stop(id); } }
 /* projectiles: what FireProjectiles sets from a ProjectileParams after Game::Spawn(9, Variant ...) */
 typedef struct { int variant; unsigned long long flags; float height, fspeed, faccel, faccel_mod, scale, vel_multi, curving, homing; int has_height, has_fspeed, has_faccel, has_scale, has_faccel_mod, has_curving; float fspeed_mod, height_mod; int has_fspeed_mod, has_height_mod; } en_pp_t;
 static unsigned long en_shoot_p(unsigned long e, float x, float y, float vx, float vy, const en_pp_t *pp);
@@ -166,7 +178,6 @@ static unsigned long en_spawn(int type, int variant, float x, float y, float vx,
  * twice, +0x454 and +0x458 (int, the countdown and its reload). The game's Effect::Update then runs the ring: it breaks rocks and hurts whatever is inside. */
 #define OFF_EFF_MINRADIUS 0x44c
 #define OFF_EFF_MAXRADIUS 0x450
-#define OFF_EFF_TIMEOUT   0x454
 #define OFF_EFF_TIMEOUT2  0x458
 static unsigned long en_shockwave(unsigned long owner, float x, float y, float minr, float maxr, int timeout) {
     unsigned long w = en_spawn(1000, 61, x, y, 0, 0, owner, 0);
@@ -555,7 +566,7 @@ static void ai_eternalfly(en_t *s, unsigned long e) {
 }
 
 /* ------------------------------------------------------------------------------------------ dispatch */
-typedef struct { int type, variant; void (*ai)(en_t *, unsigned long); void (*die)(en_t *, unsigned long); void (*hurt)(en_t *, unsigned long, float); int immune; int free_move; } enemy_t;   /* free_move: it may leave the room on purpose (flies away, flees) */
+typedef struct { int type, variant; void (*ai)(en_t *, unsigned long); void (*die)(en_t *, unsigned long); void (*hurt)(en_t *, unsigned long, float); int immune; int free_move; int corpse; } enemy_t;   /* free_move: it may leave the room on purpose (flies away, flees) */
 static const enemy_t g_enemies[] = {
     { 160, 630, ai_redhorf, die_redhorf, 0 },
     { 152, 0, ai_squarefly, die_burst, 0 },
@@ -613,7 +624,7 @@ static unsigned long en_morph(unsigned long e, int type, int variant, int sub) {
 /* ------------------------------------------------------------------------------------------ projectiles that a monster keeps (Entity_Projectile vtable 0xa8dc68, slot 4 = Projectile::Update 0x677fd0) */
 #define PJ_N 48
 typedef struct { unsigned long p, parent; int kind; float a, b; } pj_t;
-enum { PJ_MUTANT_ORBITAL = 1, PJ_HONEY = 2, PJ_BROOD = 3 };
+enum { PJ_MUTANT_ORBITAL = 1, PJ_HONEY = 2, PJ_BROOD = 3, PJ_COAL = 4, PJ_FLAME = 5 };
 static pj_t g_pj[PJ_N];
 static fn_update o_proj_update;
 static void pj_add(unsigned long p, unsigned long parent, int kind, float a) {
@@ -646,6 +657,10 @@ static void w_proj_update(unsigned long e) {
     }
     o_proj_update(e);
     if (j && j->kind == PJ_BROOD && *(const unsigned char *) (e + E_EXISTS)) { if (++j->a > 2.0f && proj_flags_ok()) *(unsigned long long *) (e + OFF_PROJ_FLAGS) &= ~PF_NO_WALL_COLLIDE; }   /* broodProj: v.FrameCount > 2 -> ClearProjectileFlags(NO_WALL_COLLIDE) */
+    if (j && j->kind == PJ_COAL && *(const unsigned char *) (e + E_EXISTS)) {                        /* projectiles.lua "coal"/"coal2"/"coalRadioactive" Update: no entity collision, walls only, spinning */
+        en_set_collision(e, ENTCOLL_NONE); en_set_gridcoll(e, GRIDCOLL_WALLS); *(float *) (e + E_SPRITE + 0xe4) += 30.0f;
+    }
+    if (j && j->kind == PJ_FLAME && *(const unsigned char *) (e + E_EXISTS)) en_paint(e, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0);   /* GuwahProjectileUpdate: FlamethrowerFire -> sprite.Color = Color.Default every frame */
     if (j && j->kind == PJ_HONEY && *(const unsigned char *) (e + E_EXISTS)) en_paint(e, 1, 1, 1, 1, 1, 1, 1, 1, 0.7f, 0.4f, 0.0f);   /* FiendFolio.ColorHoneyYellow = Color(1,1,1,1, 0.7,0.4,0) + SetColorize(1,1,1,1): the projectile's colour, kept after every engine update */
 }
 
@@ -678,7 +693,7 @@ static float en_angle_deg(float x, float y) { return atan2f(y, x) * 180.0f / 3.1
  * The port's monster hook runs from the NPC update only, so an effect whose variant the engine has no code for would sit on its anm2's first animation for ever. The ones the
  * Lua animates are remembered here and stepped once per game frame (en_piles_tick): the frame is set directly (SetFrame clears the Playing byte, so the engine never advances it twice). */
 #define FX_N 64
-enum { FX_POOF = 1, FX_WEBCORPSE, FX_CREEPTINT };
+enum { FX_POOF = 1, FX_WEBCORPSE, FX_CREEPTINT, FX_SOOTYPOOF };
 static struct { unsigned long e; int kind, age, len; float a; } g_fx[FX_N];
 static unsigned long en_fx_add(unsigned long e, int kind, int len, float a) {
     if (!e) return 0;
@@ -695,6 +710,7 @@ static void en_stinger_poof(float x, float y, int sub, float rot) {
     en_fx_add(f, FX_POOF, sub ? 11 : 9, rot);
 }
 static void en_fx_tick(void) {
+    for (int k = 0; k < 8; k++) if (g_loop_on[k] && g_loop_owner[k] && !alive(g_loop_owner[k])) { g_loop_on[k] = 0; ffsound_stop(g_loop_id[k]); }   /* a loop whose monster is gone (room left, removed) stops */
     for (int k = 0; k < FX_N; k++) {
         unsigned long f = g_fx[k].e; if (!f) continue;
         if (!alive(f)) { g_fx[k].e = 0; continue; }
@@ -706,12 +722,16 @@ static void en_fx_tick(void) {
         } else if (g_fx[k].kind == FX_WEBCORPSE) {                                   /* ransackedwebai: play "webcorpse", DepthOffset 1, Offset 0 */
             if (g_setframe) g_setframe((void *) (f + E_SPRITE), "webcorpse", 0);
             en_spr_off(f, 0.0f, 0.0f);
+        } else if (g_fx[k].kind == FX_SOOTYPOOF) {                                   /* checkSootyTearPoof: play "Destroy", Remove when finished */
+            if (++g_fx[k].age >= g_fx[k].len) { en_remove(f); g_fx[k].e = 0; continue; }
+            if (g_setframe) g_setframe((void *) (f + E_SPRITE), "Destroy", g_fx[k].age);
         } else if (g_fx[k].kind == FX_CREEPTINT) {                                   /* HoneyCreep: colorize 5.5 3.5 1 1 (the creep's own tint alpha fades by itself) */
             en_colorize(f, 5.5f, 3.5f, 1.0f, 1.0f);
         }
     }
 }
 static void en_proj_tick(void);
+static void en_burn_tick(void);
 static void en_piles_tick(void) {
     static int last = -2; int fr = g_frame_fn ? g_frame_fn() : -1;
     if (fr >= 0) { if (fr == last) return; last = fr; }                                   /* once per game frame, whatever the number of NPC updates */
@@ -722,6 +742,7 @@ static void en_piles_tick(void) {
         else if (g_setframe) g_setframe((void *) (c + E_SPRITE), "Ground", g_pile[k].age);
     }
     en_fx_tick();
+    en_burn_tick();
     en_proj_tick();
 }
 #define PW_HONEY 1
@@ -735,6 +756,12 @@ static void en_proj_watch(unsigned long p, int kind);
 #include "ffen_g5b.h"
 #include "ffen_g5c.h"
 #include "ffen_g5d.h"
+#include "ffen_g6a.h"
+#include "ffen_g6.h"
+#include "ffen_g6b.h"
+#include "ffen_g6c.h"
+#include "ffen_g6d.h"
+#include "ffen_g6e.h"
 static const enemy_t *en_find_in(const enemy_t *t, int n, int type, int variant) {
     for (int i = 0; i < n; i++) if (t[i].type == type && t[i].variant == variant) return &t[i];
     return 0;
@@ -747,7 +774,12 @@ static const enemy_t *en_find(int type, int variant) {
     if ((r = en_find_in(g_tab_g3, N_TAB_G3, type, variant))) return r;
     if ((r = en_find_in(g_tab_g4, N_TAB_G4, type, variant))) return r;
     if ((r = en_find_in(g_tab_g5, N_TAB_G5, type, variant))) return r;
-    return en_find_in(g_tab_g5d, N_TAB_G5D, type, variant);
+    if ((r = en_find_in(g_tab_g5d, N_TAB_G5D, type, variant))) return r;
+    if ((r = en_find_in(g_tab_g6, N_TAB_G6, type, variant))) return r;
+    if ((r = en_find_in(g_tab_g6b, N_TAB_G6B, type, variant))) return r;
+    if ((r = en_find_in(g_tab_g6c, N_TAB_G6C, type, variant))) return r;
+    if ((r = en_find_in(g_tab_g6d, N_TAB_G6D, type, variant))) return r;
+    return en_find_in(g_tab_g6e, N_TAB_G6E, type, variant);
 }
 
 
@@ -910,7 +942,7 @@ static void w_npc_update(unsigned long e) {
             if (!s->dead_done) { s->dead_done = 1; ENLOG(0, 24, "ffenemy: %d.%d dies (frame %d)", type, s->variant, s->age); if (d->die) d->die(s, e); }
             /* the corpse is left to the engine. A monster the engine has no death code for (the Lua kills it with npc:Kill() and the engine waits for a "Death" animation these
              * anm2 files do not have) would stay for ever: alive, unhittable and counted by the room's clear check (ff-codigo47's bee). After 75 frames it is removed. */
-            if (++s->dead_age == 75) { ENLOG(74, 24, "ffenemy: %d.%d was still in the room 75 frames after dying (HP <= 0): removed", type, s->variant); en_remove(e); }
+            if (++s->dead_age == (d->corpse ? d->corpse : 75)) { if (!d->corpse) ENLOG(74, 24, "ffenemy: %d.%d was still in the room 75 frames after dying (HP <= 0): removed", type, s->variant); en_remove(e); }   /* corpse: a monster whose anm2 has no Death animation leaves after that many frames */
             s = 0;
         } else {
             if (d->ai) d->ai(s, e);

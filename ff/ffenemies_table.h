@@ -1,7 +1,7 @@
 /* Written by tools/spawner_ff_enemies.py - do not edit by hand. Included twice by spawner_enemies.h (ffconsole_patch.py):
  * once for the count, once inside the SP_ENEMY initializer (group SP_GROUP_FF = FIEND FOLIO). */
 #ifndef FF_ENEMY_ROWS
-#define FF_ENEMY_ROWS 82
+#define FF_ENEMY_ROWS 84
 #endif
 #ifdef FF_ENEMY_BODY
     { 151, 0, 0, SP_GROUP_FF, 10000, 26, 26, -1, -1, 0, { "Slammer", "Slammer", "Slammer", "Slammer", "Slammer", "Slammer", "Slammer" } },   /* basement */
@@ -86,4 +86,6 @@
     { 451, 150, 0, SP_GROUP_FF, 10079, 39, 29, -1, -1, 0, { "Chili", "Chili", "Chili", "Chili", "Chili", "Chili", "Chili" } },   /* burning */
     { 451, 151, 0, SP_GROUP_FF, 10080, 15, 19, -1, -1, 0, { "Litling", "Litling", "Litling", "Litling", "Litling", "Litling", "Litling" } },   /* burning */
     { 180, 21, 0, SP_GROUP_FF, 10081, 24, 21, -1, -1, 0, { "Commission", "Commission", "Commission", "Commission", "Commission", "Commission", "Commission" } },   /* burning */
+    { 151, 6, 0, SP_GROUP_FF, 10082, 26, 26, -1, -1, 0, { "S'Eptic", "S'Eptic", "S'Eptic", "S'Eptic", "S'Eptic", "S'Eptic", "S'Eptic" } },   /* burning */
+    { 965, 67, 0, SP_GROUP_FF, 10083, 37, 31, -1, -1, 0, { "Flaming Minecart", "Flaming Minecart", "Flaming Minecart", "Flaming Minecart", "Flaming Minecart", "Flaming Minecart", "Flaming Minecart" } },   /* burning */
 #endif
