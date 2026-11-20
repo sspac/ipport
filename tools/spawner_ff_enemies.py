@@ -23,7 +23,7 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 FLOORS = {
  'basement': "Slammer|Wimpy|Red Horf|Mutant Horf|Mr. Horf|Mr. Red Horf|Morsel|Pester|Slim|Limb|Bowler|Loafer|Slobber|Bleeder|Casualty|Dung|Tall Boi|Shitling|Shot Fly|Shoter|Square Fly|Bumbler|Potluck|Poobottle|Tap|Butt Fly|Weaver|Drink Worm|Benign|Drumstick|Cheeky",
  'cellar': "Spooter|Super Spooter|Skuzz|Ring Skuzz|Army Skuzz|Baby Spider|Sticky Sack|Walking Sticky Sack|Ransacked|Coby|Nanny Long Legs|Brood|Zingling|Beeter|Hover|Honey Eye|Stingler|Homer|Honeydrip|Marge|Receptor|Haunted|Yawner|Crotchety|Dim|Spoop|Shirk",
- 'burning': "S'More|Woodburner|Wick|Mr. Flare|Mr. Crisply|Powderkeg|Mullikaboom|Fried|Fire Fly|Spitroast|Spark|Charlie|Sooty|Big Smoke|Brisket|Smogger|Fumegeist|Mote|Smokin|Flamin|Trailblazer|Chili|Litling|Commission",
+ 'burning': "S'More|Woodburner|Wick|Mr. Flare|Mr. Crisply|Powderkeg|Mullikaboom|Fried|Fire Fly|Spitroast|Spark|Charlie|Sooty|Big Smoke|Brisket|Smogger|Fumegeist|Mote|Smokin|Flamin|Trailblazer|Chili|Litling|Commission|S'Eptic|Flaming Minecart",
 }
 # the entity of a wiki name where the name alone is not unique or differs (type, variant, subtype)
 PICK = {'Weaver': (155, 0, 0)}
@@ -32,7 +32,10 @@ SUPPORT = [(160, 461, 0), (160, 771, 0), (160, 773, 0), (160, 760, 2), (155, 0, 
            (1000, 146, 150), (1000, 94, 160), (1000, 38, 7000),                                                    # the Weaver's opening pile
            (150, 6, 0), (150, 6, 1), (150, 6, 2), (1000, 7014, 0), (1000, 7014, 1), (1000, 667, 0),   # Stinger shots and their poofs, Ransacked's web
            (160, 80, 0), (160, 82, 0), (750, 80, 0),                               # what Ransacked hatches (Dweller, Resident, Sackboy)
-           (451, 91, 0), (150, 451, 0), (1000, 1980, 10), (1000, 1980, 11)]        # Dim's Soul, Shirk Spot, Spoop's trail          # Pester's Eternal Fly (orbits it)
+           (451, 91, 0), (150, 451, 0), (1000, 1980, 10), (1000, 1980, 11),
+           # Burning Basement: what its monsters spawn
+           (1000, 7005, 0), (1000, 7014, 2), (1000, 1960, 12), (160, 443, 0), (160, 311, 0), (451, 100, 1), (451, 151, 0), (451, 150, 0),
+           (1000, 1722, 0), (1000, 1722, 1), (61, 961, 0), (965, 67, 0)]        # Dim's Soul, Shirk Spot, Spoop's trail          # Pester's Eternal Fly (orbits it)
 ICON_BASE = 10000          # SP_ENEMY[].icon >= this: frame (icon - ICON_BASE) of port_ff_enemy_icons.anm2 (spawner.c patch)
 BAND = 48
 
@@ -141,7 +144,16 @@ def art_files(ff, a):
 
 
 # anm2 files that are not an entity's own but that a monster loads from code (Sprite:Load): installed with their sheets
-EXTRA_ART = ['projectiles/projectile_broodEgg.anm2']
+EXTRA_ART = ['projectiles/projectile_broodEgg.anm2',
+             # Burning Basement: anm2 / sheets the code loads or swaps (Sprite::Load, ReplaceSpritesheet)
+             'effects/1000.092_creep (ash).anm2', 'enemies/chili/monster_litling.anm2', 'effects/ff_white_smoke.anm2',
+             'effects/effect_005_fire_red.png', 'effects/effect_005_fire_blue.png', 'effects/effect_waterpool.png', 'enemies/blazer/effect_005_fire_blue.png',
+             'projectiles/brisket_tear.png', 'projectiles/sooty_tear.anm2', 'projectiles/sooty_tear2.anm2', 'projectiles/sooty_tear_radioactive.anm2',
+             'bosses/buster/monster_commission1.png', 'bosses/buster/monster_commission2.png', 'bosses/buster/monster_commission3.png',
+             'enemies/smokin/chain.anm2', 'enemies/smokin/chain_red.anm2', 'enemies/smokin/chain_blue.anm2', 'enemies/smokin/chain_purple.anm2',
+             'enemies/smokin/monster_flamin.anm2', 'enemies/smokin/monster_flamin_red.anm2', 'enemies/smokin/monster_flamin_blue.anm2', 'enemies/smokin/monster_flamin_purple.anm2',
+             'enemies/smokin/monster_smokin_red.png', 'enemies/smokin/monster_smokin_blue.png', 'enemies/smokin/monster_smokin_purple.png'] + \
+            ['enemies/smokey/charlie_head%d.png' % i for i in range(1, 11)] + ['enemies/smokey/charlie_head_charge.png']
 def extra_art(ff):
     gfx = os.path.join(ff, 'resources', 'gfx'); out = []
     for rel in EXTRA_ART:
