@@ -39,6 +39,9 @@
 #define FFSND_TapStart 878
 #define FFSND_TapTap 879
 #define FFSND_WingFlap 880
+#define FFSND_Waterboom 881
+#define FFSND_Lighter 882
+#define FFSND_RubberRockBounce 883
 static const struct { int id; const char *files[7]; } FF_SND_X[] = {
     { 842, { "BalloonBlowingUpShort.wav" } },
     { 843, { "beebuzz.wav" } },
@@ -79,6 +82,9 @@ static const struct { int id; const char *files[7]; } FF_SND_X[] = {
     { 878, { "tap_open1.wav" } },
     { 879, { "tap_open2.wav" } },
     { 880, { "WingFlap1.wav", "WingFlap2.wav" } },
+    { 881, { "waterboom.wav" } },
+    { 882, { "Lighter.wav" } },
+    { 883, { "rubberrock_01.wav", "rubberrock_02.wav", "rubberrock_03.wav" } },
     { 0, { 0 } } };
 /* parts of the multi-part sounds: first id, count (ffsound_play picks one at random) */
 static const struct { int first, n; } FF_SND_PARTS[] = {

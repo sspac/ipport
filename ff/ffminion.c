@@ -880,6 +880,7 @@ static int w_npc_take(unsigned long e, float dmg, unsigned long long flags, void
     float before[HP_N];
     g_hit_flags = flags; g_hit_src = (ref && g_readable(ref, 0x30)) ? *(const unsigned long *) ((unsigned char *) ref + FB_REF_SOURCE) : 0;     /* what the Lua's Hurt callbacks get as flag / source */
     if (en_hurt(e, dmg)) return 0;
+    dmg += en_bruise_extra(e, flags);                                           /* statuses/bruise.lua: + the 5 biggest stack damages */
     int have = fb_pre_hit(e, before);
     float vel0[2]; ht_before(e, dmg, flags, vel0);
     int r = o_npc_take(e, dmg, flags, ref, cd);
@@ -947,6 +948,9 @@ void shim_ffminion_install(unsigned char *base) {
     g_load = fb_real_load;
     g_sheet_l = fb_real_sheet_l;
     g_set_parent = (void (*)(unsigned long, unsigned long)) (g_base + 0x82bafc);
+    g_add_poison = (void (*)(unsigned long, const void *, int, float)) (g_base + 0x82f294); g_add_charm = (void (*)(unsigned long, const void *, int)) (g_base + 0x82f5c4);
+    g_add_conf = (void (*)(unsigned long, const void *, int, int)) (g_base + 0x82f914); g_add_fear = (void (*)(unsigned long, const void *, int)) (g_base + 0x82fc08);
+    g_game_fart = (void (*)(unsigned long, const float *, unsigned long, int, const float *, float, float)) (g_base + 0x894398); g_game_charmfart = (void (*)(unsigned long, const float *, unsigned long, float)) (g_base + 0x89465c);
     take_slot("Player::Update", PLAYER_VTABLE, 4, FN_PLAYER_UPDATE, (void *) w_player_update, (void **) &o_player_update);
     take_slot("Familiar::Update", FAMILIAR_VTABLE, 4, FN_FAMILIAR_UPDATE, (void *) w_familiar_update, (void **) &o_familiar_update);
     take_slot("NPC::Update", NPC_VTABLE, 4, FN_NPC_UPDATE, (void *) w_npc_update, (void **) &o_npc_update);
