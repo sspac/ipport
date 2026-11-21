@@ -1,5 +1,5 @@
 /* Written by tools/ff_sounds.py - do not edit by hand. FFSND_<key> = the id to give ffsound_play; a sound with several parts (7 samples each) has FFSND_<key>_PARTS = n and the parts are consecutive ids. */
-#define FF_NSOUNDS_EXTRA 39
+#define FF_NSOUNDS_EXTRA 45
 #define FFSND_BaloonShort 842
 #define FFSND_BeeBuzz 843
 #define FFSND_BeeBuzzDown 844
@@ -42,6 +42,9 @@
 #define FFSND_Waterboom 881
 #define FFSND_Lighter 882
 #define FFSND_RubberRockBounce 883
+#define FFSND_GolemDoorClose 884
+#define FFSND_SmashHitWeak 885
+#define FFSND_ZoomAway 886
 static const struct { int id; const char *files[7]; } FF_SND_X[] = {
     { 842, { "BalloonBlowingUpShort.wav" } },
     { 843, { "beebuzz.wav" } },
@@ -85,6 +88,9 @@ static const struct { int id; const char *files[7]; } FF_SND_X[] = {
     { 881, { "waterboom.wav" } },
     { 882, { "Lighter.wav" } },
     { 883, { "rubberrock_01.wav", "rubberrock_02.wav", "rubberrock_03.wav" } },
+    { 884, { "golem_trapdoor_close0.wav", "golem_trapdoor_close1.wav" } },
+    { 885, { "SmashHitWeak.wav" } },
+    { 886, { "zoom_away.wav" } },
     { 0, { 0 } } };
 /* parts of the multi-part sounds: first id, count (ffsound_play picks one at random) */
 static const struct { int first, n; } FF_SND_PARTS[] = {
