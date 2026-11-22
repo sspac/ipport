@@ -1,0 +1,42 @@
+/* Written by tools/spawner_ff_pickups.py - do not edit by hand. Included twice by spawner_pickups.h (ffpickups_patch.py):
+ * once for the count, once inside the SP_PICKUP initializer. Row k of this file is SP_PICKUP[FF_PICKUP_FIRST + k]; its icon is frame k of port_ff_pickup_icons.anm2. */
+#ifndef FF_PICKUP_ROWS
+#define FF_PICKUP_ROWS 35
+#endif
+#ifdef FF_PICKUP_BODY
+    { 5, 1024, 0, SP_G_HEARTS, 16, 13, { "Immoral Heart", "Immoral Heart", "Immoral Heart", "Corazón inmoral", "Immoral Heart", "Immoral Heart", "Immoral Heart" } },
+    { 5, 1025, 0, SP_G_HEARTS, 16, 14, { "Half Immoral Heart", "Half Immoral Heart", "Half Immoral Heart", "Medio corazón inmoral", "Half Immoral Heart", "Half Immoral Heart", "Half Immoral Heart" } },
+    { 5, 1026, 0, SP_G_HEARTS, 16, 13, { "Blended Immoral Heart", "Blended Immoral Heart", "Blended Immoral Heart", "Corazón inmoral mezclado", "Blended Immoral Heart", "Blended Immoral Heart", "Blended Immoral Heart" } },
+    { 5, 1022, 0, SP_G_HEARTS, 16, 14, { "Half Black Heart (FF)", "Half Black Heart (FF)", "Half Black Heart (FF)", "Medio corazón negro (FF)", "Half Black Heart (FF)", "Half Black Heart (FF)", "Half Black Heart (FF)" } },
+    { 5, 1023, 0, SP_G_HEARTS, 16, 13, { "Blended Black Heart (FF)", "Blended Black Heart (FF)", "Blended Black Heart (FF)", "Corazón negro mezclado (FF)", "Blended Black Heart (FF)", "Blended Black Heart (FF)", "Blended Black Heart (FF)" } },
+    { 5, 20, 213, SP_G_COINS, 20, 14, { "Cursed Penny", "Cursed Penny", "Cursed Penny", "Moneda maldita", "Cursed Penny", "Cursed Penny", "Cursed Penny" } },
+    { 5, 20, 214, SP_G_COINS, 20, 14, { "Haunted Penny", "Haunted Penny", "Haunted Penny", "Moneda embrujada", "Haunted Penny", "Haunted Penny", "Haunted Penny" } },
+    { 5, 20, 215, SP_G_COINS, 18, 15, { "Honey Penny", "Honey Penny", "Honey Penny", "Moneda de miel", "Honey Penny", "Honey Penny", "Honey Penny" } },
+    { 5, 20, 216, SP_G_COINS, 20, 15, { "Golden Cursed Penny", "Golden Cursed Penny", "Golden Cursed Penny", "Moneda maldita dorada", "Golden Cursed Penny", "Golden Cursed Penny", "Golden Cursed Penny" } },
+    { 5, 20, 217, SP_G_COINS, 18, 16, { "Lego Stud", "Lego Stud", "Lego Stud", "Pieza de Lego", "Lego Stud", "Lego Stud", "Lego Stud" } },
+    { 5, 20, 218, SP_G_COINS, 20, 17, { "Sticky Medley Penny", "Sticky Medley Penny", "Sticky Medley Penny", "Moneda medley pegajosa", "Sticky Medley Penny", "Sticky Medley Penny", "Sticky Medley Penny" } },
+    { 5, 20, 219, SP_G_COINS, 20, 17, { "Medley Penny", "Medley Penny", "Medley Penny", "Moneda medley", "Medley Penny", "Medley Penny", "Medley Penny" } },
+    { 5, 20, 220, SP_G_COINS, 24, 16, { "Platinum Penny", "Platinum Penny", "Platinum Penny", "Moneda de platino", "Platinum Penny", "Platinum Penny", "Platinum Penny" } },
+    { 5, 20, 221, SP_G_COINS, 12, 10, { "Lil' Penny", "Lil' Penny", "Lil' Penny", "Monedita", "Lil' Penny", "Lil' Penny", "Lil' Penny" } },
+    { 5, 20, 222, SP_G_COINS, 18, 13, { "Penny That Doubles In Size Every Day", "Penny That Doubles In Size Every Day", "Penny That Doubles In Size Every Day", "Moneda que duplica su tamaño cada día", "Penny That Doubles In Size Every Day", "Penny That Doubles In Size Every Day", "Penny That Doubles In Size Every Day" } },
+    { 5, 20, 223, SP_G_COINS, 18, 13, { "Mobile Penny", "Mobile Penny", "Mobile Penny", "Moneda móvil", "Mobile Penny", "Mobile Penny", "Mobile Penny" } },
+    { 5, 30, 179, SP_G_KEYS, 10, 14, { "Spicy Key", "Spicy Key", "Spicy Key", "Llave picante", "Spicy Key", "Spicy Key", "Spicy Key" } },
+    { 5, 30, 180, SP_G_KEYS, 12, 14, { "Super Spicy Key", "Super Spicy Key", "Super Spicy Key", "Llave superpicante", "Super Spicy Key", "Super Spicy Key", "Super Spicy Key" } },
+    { 5, 30, 181, SP_G_KEYS, 10, 14, { "Charged Spicy Key", "Charged Spicy Key", "Charged Spicy Key", "Llave picante cargada", "Charged Spicy Key", "Charged Spicy Key", "Charged Spicy Key" } },
+    { 5, 30, 182, SP_G_KEYS, 12, 14, { "Spicy Key (Box)", "Spicy Key (Box)", "Spicy Key (Box)", "Llave picante (caja)", "Spicy Key (Box)", "Spicy Key (Box)", "Spicy Key (Box)" } },
+    { 5, 30, 183, SP_G_KEYS, 12, 14, { "Charged Spicy Key (Box)", "Charged Spicy Key (Box)", "Charged Spicy Key (Box)", "Llave picante cargada (caja)", "Charged Spicy Key (Box)", "Charged Spicy Key (Box)", "Charged Spicy Key (Box)" } },
+    { 5, 30, 184, SP_G_KEYS, 14, 14, { "Super Spicy Key (Box)", "Super Spicy Key (Box)", "Super Spicy Key (Box)", "Llave superpicante (caja)", "Super Spicy Key (Box)", "Super Spicy Key (Box)", "Super Spicy Key (Box)" } },
+    { 5, 30, 185, SP_G_KEYS, 10, 14, { "Spicy Key (Perm)", "Spicy Key (Perm)", "Spicy Key (Perm)", "Llave picante (perm.)", "Spicy Key (Perm)", "Spicy Key (Perm)", "Spicy Key (Perm)" } },
+    { 5, 30, 186, SP_G_KEYS, 12, 14, { "Super Spicy Key (Perm)", "Super Spicy Key (Perm)", "Super Spicy Key (Perm)", "Llave superpicante (perm.)", "Super Spicy Key (Perm)", "Super Spicy Key (Perm)", "Super Spicy Key (Perm)" } },
+    { 5, 30, 187, SP_G_KEYS, 10, 14, { "Charged Spicy Key (Perm)", "Charged Spicy Key (Perm)", "Charged Spicy Key (Perm)", "Llave picante cargada (perm.)", "Charged Spicy Key (Perm)", "Charged Spicy Key (Perm)", "Charged Spicy Key (Perm)" } },
+    { 5, 752, 0, SP_G_KEYS, 22, 20, { "Blue Puzzle Key", "Blue Puzzle Key", "Blue Puzzle Key", "Llave de puzle azul", "Blue Puzzle Key", "Blue Puzzle Key", "Blue Puzzle Key" } },
+    { 5, 752, 1, SP_G_KEYS, 24, 22, { "Green Puzzle Key", "Green Puzzle Key", "Green Puzzle Key", "Llave de puzle verde", "Green Puzzle Key", "Green Puzzle Key", "Green Puzzle Key" } },
+    { 5, 752, 2, SP_G_KEYS, 20, 18, { "Red Puzzle Key", "Red Puzzle Key", "Red Puzzle Key", "Llave de puzle roja", "Red Puzzle Key", "Red Puzzle Key", "Red Puzzle Key" } },
+    { 5, 40, 923, SP_G_BOMBS, 20, 21, { "Copper Bomb", "Copper Bomb", "Copper Bomb", "Bomba de cobre", "Copper Bomb", "Copper Bomb", "Copper Bomb" } },
+    { 5, 40, 924, SP_G_BOMBS, 27, 23, { "Double Copper Bomb", "Double Copper Bomb", "Double Copper Bomb", "Bomba de cobre doble", "Double Copper Bomb", "Double Copper Bomb", "Double Copper Bomb" } },
+    { 5, 40, 925, SP_G_BOMBS, 27, 23, { "Mixed Double Bomb", "Mixed Double Bomb", "Mixed Double Bomb", "Bomba doble mixta", "Mixed Double Bomb", "Mixed Double Bomb", "Mixed Double Bomb" } },
+    { 5, 900, 0, SP_G_BATTERIES, 10, 13, { "Firework Battery", "Firework Battery", "Firework Battery", "Batería de fuegos artificiales", "Firework Battery", "Firework Battery", "Firework Battery" } },
+    { 5, 901, 0, SP_G_BATTERIES, 8, 16, { "Virtuous Battery", "Virtuous Battery", "Virtuous Battery", "Batería virtuosa", "Virtuous Battery", "Virtuous Battery", "Virtuous Battery" } },
+    { 5, 902, 0, SP_G_BATTERIES, 15, 14, { "Potato Battery", "Potato Battery", "Potato Battery", "Batería de patata", "Potato Battery", "Potato Battery", "Potato Battery" } },
+    { 5, 903, 0, SP_G_BATTERIES, 21, 19, { "Cursed Battery", "Cursed Battery", "Cursed Battery", "Batería maldita", "Cursed Battery", "Cursed Battery", "Cursed Battery" } },
+#endif

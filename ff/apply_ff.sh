@@ -50,6 +50,9 @@ python3 "$HERE/ffwatch_patch.py" "$CPP/pack.c"
 # the console: Fiend Folio's monsters in the ENEMIES tab (ffenemies_table.h is written by tools/spawner_ff_enemies.py)
 cp "$HERE/ffenemies_table.h" "$CPP/ffenemies_table.h"
 python3 "$HERE/ffconsole_patch.py" "$CPP"
+# the console: Fiend Folio's pickups in the ITEMS tab (ffpickups_table.h is written by tools/spawner_ff_pickups.py)
+cp "$HERE/ffpickups_table.h" "$CPP/ffpickups_table.h"
+python3 "$HERE/ffpickups_patch.py" "$CPP"
 # category words in the console search (enemies, bosses, mini bosses, monsters, fiend folio, items, keys ...)
 python3 "$HERE/ffsearch_patch.py" "$CPP"
 # Mali crash (libGLES_mali.so, from libisaacport.so shim_gpu_passes_open+0x468): the per-pass timestamp queries of the report build

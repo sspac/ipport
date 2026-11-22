@@ -13,7 +13,7 @@ where a name match used to be, in the list's normal order and under its normal h
   ITEMS tab     items | collectibles       the ITEMS section        keys, bombs, coins, hearts, batteries    those sections
                 cards, runes, pills, trinkets, loot                 those sections     pickups   keys..batteries and loot
                 fiend folio | fiendfolio | ff   every row whose id is past the game's own (collectible > SP_COLLECTIBLE_TOP,
-                trinket > SP_TRINKET_TOP, card > EID_CARD_MAX) - the rows the description database lists for mods
+                trinket > SP_TRINKET_TOP, card > EID_CARD_MAX, a pickup from FF_PICKUP_FIRST on: ffpickups_patch.py) - the rows the description database lists for mods
 
 Anything else is searched by name exactly as before. Every edit demands its anchor exactly once (a changed spawner.c stops the build
 here); a second run does nothing.
@@ -60,6 +60,9 @@ static unsigned cat_mask(const char *query, const cat_word_t *t, int n) {
     return m;
 }
 #define CAT_FF 0x80000000u
+#ifndef FF_PICKUP_FIRST
+#define FF_PICKUP_FIRST 0x7fffffff
+#endif
 
 #ifdef SP_GROUP_FF
 #define CAT_ALL_ENEMIES ((1u << SP_GROUP_BOSS) | (1u << SP_GROUP_MINIBOSS) | (1u << SP_GROUP_MONSTER) | (1u << SP_GROUP_TRAINING) | (1u << SP_GROUP_FF))
@@ -106,7 +109,7 @@ static int items_category(const char *query) {
         if (m & CAT_FF) {
             unsigned id = r.id;
             keep = (r.kind == KIND_ITEM && id > SP_COLLECTIBLE_TOP) || (r.kind == KIND_TRINKET && (id & ~(unsigned) TRINKET_GOLD) > SP_TRINKET_TOP) ||
-                   (r.kind == KIND_CARD && id > EID_CARD_MAX);
+                   (r.kind == KIND_CARD && id > EID_CARD_MAX) || (r.kind == KIND_PICKUP && id >= FF_PICKUP_FIRST);
         } else keep = put;
         if (!keep) continue;
         if (!put) { g_rows[w++] = g_rows[head]; put = 1; }                              /* Fiend Folio: the section's heading once, when it has a row */
