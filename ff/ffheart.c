@@ -554,6 +554,22 @@ void ffsound_pickup_end(int) __attribute__((weak));
 static int w_collide(unsigned long pk, unsigned long other, int low) {
     int variant = *(const int *) (pk + E_VARIANT);
     if (variant == V_MINION && *(const int *) (pk + E_TYPE) == PICKUP) return 0;   /* a minion is not picked up */
+    if (*(const int *) (pk + E_TYPE) == PICKUP && *(const int *) (other + E_TYPE) == 1) {
+        /* Fiend Folio's coins (5.20.213-223), Spicy keys (5.30.179-187), batteries (5.900-903) and Copper bombs (5.40.923-925): the game knows no such pickup, so for the length of its own collision it
+         * answers as the plain one it is made of (1 coin / 1 key, a double key, a charged key / a battery / 1 bomb, a double bomb) and, if the game did not take it, it is put back. The Lua does just this for the
+         * Doubling and Mobile pennies (pennyvariants.lua). NOT done: each one's own effect (Cursed Penny's random outcome, Spicy Key's fire, the batteries' charges, Copper Bomb's ...) */
+        int nv = 0, ns = 0, sb = *(const int *) (pk + E_SUBTYPE);
+        if (variant == 20 && sb >= 213 && sb <= 223) { nv = 20; ns = 1; }
+        else if (variant == 30 && sb >= 179 && sb <= 187) { static const int m[9] = { 1, 3, 4, 1, 4, 3, 1, 3, 4 }; nv = 30; ns = m[sb - 179]; }
+        else if (variant >= 900 && variant <= 903) { nv = 90; ns = 1; }
+        else if (variant == 40 && sb >= 923 && sb <= 925) { nv = 40; ns = sb == 923 ? 1 : 3; }
+        if (nv) {
+            *(int *) (pk + E_VARIANT) = nv; *(int *) (pk + E_SUBTYPE) = ns;
+            int r = o_collide(pk, other, low);
+            if (!*(const unsigned char *) (pk + E_DEAD)) { *(int *) (pk + E_VARIANT) = variant; *(int *) (pk + E_SUBTYPE) = sb; }
+            return r;
+        }
+    }
     int sub = soul_form(variant);
     if (!sub || *(const int *) (other + E_TYPE) != 1 /* the player: type 1 */) return o_collide(pk, other, low);
     int was = *(const int *) (pk + E_SUBTYPE);

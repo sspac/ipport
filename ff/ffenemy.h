@@ -766,6 +766,7 @@ static void en_proj_watch(unsigned long p, int kind);
 #include "ffen_g8.h"
 #include "ffen_g9.h"
 #include "ffen_g10.h"
+#include "ffen_g11.h"
 static const enemy_t *en_find_in(const enemy_t *t, int n, int type, int variant) {
     for (int i = 0; i < n; i++) if (t[i].type == type && t[i].variant == variant) return &t[i];
     return 0;
@@ -787,7 +788,9 @@ static const enemy_t *en_find(int type, int variant) {
     if ((r = en_find_in(g_tab_g7, N_TAB_G7, type, variant))) return r;
     if ((r = en_find_in(g_tab_g8, N_TAB_G8, type, variant))) return r;
     if ((r = en_find_in(g_tab_g9, N_TAB_G9, type, variant))) return r;
-    return en_find_in(g_tab_g10, N_TAB_G10, type, variant);
+    if ((r = en_find_in(g_tab_g10, N_TAB_G10, type, variant))) return r;
+    if ((r = en_find_in(g_tab_g11, N_TAB_G11, type, variant))) return r;
+    return en_find_in(g_tab_g11b, N_TAB_G11B, type, variant);
 }
 
 
