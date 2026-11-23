@@ -293,6 +293,13 @@ static unsigned long first_player(void) {
     return ((unsigned long (*)(unsigned long, int)) (g_base + FN_PLAYER_AT))(game + GAME_PLAYERS, 0);
 }
 static unsigned long (*g_first_player)(void) = first_player;
+static unsigned long real_player_n(int i) {
+    if (!g_base) return 0;
+    unsigned long game = *(const unsigned long *) (g_base + GAME_PTR); if (!game) return 0;
+    const unsigned long *l = (const unsigned long *) (game + GAME_PLAYER_LIST);
+    if (!l[0] || l[1] < l[0] || (unsigned long) i >= (l[1] - l[0]) / 8) return 0;
+    return ((unsigned long (*)(unsigned long, int)) (g_base + FN_PLAYER_AT))(game + GAME_PLAYERS, i);
+}
 
 static void sweep_crits(void) {
     long long t = now_ms();
@@ -939,6 +946,8 @@ void shim_ffminion_install(unsigned char *base) {
     g_grid_spawn = (int (*)(unsigned long, int, int, int, unsigned, int)) (base + FN_GRID_SPAWN);
     g_setframe = (fn_setframe) (g_base + FN_SPRITE_SETFRAME); g_setoframe = (fn_setframe) (g_base + 0x89ee7c); g_sprupd = (fn_sprupd) (g_base + 0x89d598); g_spawn = real_spawn; g_play = real_play; g_overlay = real_overlay; g_remove_overlay = real_remove_overlay; g_list_now = shim_eid_list_now; g_readable = shim_eid_readable;
     g_seed ^= (unsigned) now_ms();
+    g_add_coins = (void (*)(unsigned long, int)) (g_base + 0x4f0a14); g_add_keys = (void (*)(unsigned long, int)) (g_base + 0x4f0ca0); g_add_bombs = (void (*)(unsigned long, int)) (g_base + 0x4f0d20);
+    g_player_n = real_player_n;
     o_update = (fn_update) *slot;
     *slot = (unsigned long) w_update;
     LOG("ffminion: Pickup::Update wrapped (vtable slot 4)");
