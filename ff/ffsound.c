@@ -86,7 +86,7 @@ void ffsound_on_open(const char *inner) {
                 /* the base game's sounds may be looked for under either resources folder of the pack */
                 static const char *const alt[] = { "rebirth-resources/data/", "repentance-resources/data/" };
                 for (int a = 0; a < 2; a++) { char t2[400]; snprintf(t2, sizeof t2, "%ssfx/fiendfolio/%s", alt[a], SND_FILE(i, k)); if (strcmp(t2, to)) shim_pack_add(t2, w, wl); }
-            } else LOG("ffsound: %s is missing from the assets", from);
+            } else FFLOG(FFC_SOUND_MISS, 100000 + i * 16 + k, "%s is missing from the assets: sound id %d would be silent", from, SND_ID(i));
         }
         al += snprintf(add + al, sizeof add - al, "\t</sound>\n");
     }
@@ -115,10 +115,13 @@ static unsigned rnd(unsigned n) { g_rng ^= g_rng << 13; g_rng ^= g_rng >> 17; g_
 static float frnd(float a, float b) { return a + (b - a) * (float) (rnd(1000)) / 1000.0f; }
 
 /* the engine's own sound, not replaced by us */
+#define FF_SND_TABLE (833 + FF_NSOUNDS)           /* the game's table plus ours (grown in ffsound_grow_table) */
 static void engine_sound(int id, float vol, float pitch) {
-    static int told;
-    if (told < 14) { told++; LOG("ffsound: our own play of sound %d (vol %.2f, pitch %.2f)%s", id, (double) vol, (double) pitch, g_mgr ? "" : " - NO sound manager yet"); }
-    if (!o_sfx || !g_mgr) return;
+    /* SOUND: every play of ours, counted (FFLOG keeps the first lines per id and the totals in the summary). SOUND_MISS: the id is not
+     * in the table, or the engine cannot be asked yet (no SFXManager seen / call not wrapped) - the cases where nothing would be heard */
+    FFLOG(FFC_SOUND, id, "id %d vol %.2f pitch %.2f", id, (double) vol, (double) pitch);
+    if (id < 0 || id >= FF_SND_TABLE) { FFLOG(FFC_SOUND_MISS, id, "id %d is outside the sounds table (0..%d)", id, FF_SND_TABLE - 1); return; }
+    if (!o_sfx || !g_mgr) { FFLOG(FFC_SOUND_MISS, id, "id %d: %s", id, !o_sfx ? "the SFXManager::Play call is not wrapped" : "no SFXManager seen yet (the game has not played a sound)"); return; }
     g_own++; o_sfx(g_mgr, id, 0, 0, vol, pitch, 0.0f); g_own--;
 }
 
@@ -131,7 +134,9 @@ void ffsound_play(int id, float vol, float pitch) {
 /* a looping sound and its Stop (sfx:Play(id, vol, 0, true, pitch) / sfx:Stop(id)): SFXManager::Stop is 0x7f0c5c (this, int id: stops every playing sample of the sound, measured) */
 #define FN_SFX_STOP 0x7f0c5c
 void ffsound_loop(int id, float vol, float pitch) {
-    if (!o_sfx || !g_mgr) return;
+    FFLOG(FFC_SOUND, id, "id %d vol %.2f pitch %.2f (loop)", id, (double) vol, (double) pitch);
+    if (id < 0 || id >= FF_SND_TABLE) { FFLOG(FFC_SOUND_MISS, id, "loop id %d is outside the sounds table (0..%d)", id, FF_SND_TABLE - 1); return; }
+    if (!o_sfx || !g_mgr) { FFLOG(FFC_SOUND_MISS, id, "loop id %d: %s", id, !o_sfx ? "the SFXManager::Play call is not wrapped" : "no SFXManager seen yet"); return; }
     g_own++; o_sfx(g_mgr, id, 0, 1, vol, pitch, 0.0f); g_own--;
 }
 void ffsound_stop(int id) {
@@ -158,6 +163,7 @@ static int hurt_id(void) { return ID_HURT_A + (int) rnd(2); }
 static void w_sfx(unsigned long mgr, int id, int delay, int loop, float vol, float pitch, float pan) {
     if (!g_mgr) g_mgr = mgr;
     if (g_own) { o_sfx(mgr, id, delay, loop, vol, pitch, pan); return; }
+    if (id >= 833) FFLOG(FFC_SOUND, id, "id %d vol %.2f pitch %.2f (asked by the game itself, loop %d)", id, (double) vol, (double) pitch, loop);   /* one of ours reaching the engine by another path */
     if (g_swallow > 0) return;
     /* Lua main.lua:4806-4825 (PRE_SFX_PLAY on ISAACDIES) and 21150+ (sfx:Stop(HURT_GRUNT)): only for a Fiend Folio character,
      * the vanilla grunt/death is cut and the character's own sound plays instead. Everyone else keeps the game's. */

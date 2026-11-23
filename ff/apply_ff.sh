@@ -15,7 +15,8 @@ cp "$HERE/ffminion.c" "$CPP/ffminion.c"
 cp "$HERE/fffireball.h" "$CPP/fffireball.h"
 cp "$HERE/ffenemy.h" "$CPP/ffenemy.h"
 cp "$HERE/ffanim_table.h" "$CPP/ffanim_table.h"
-for h in ffenums.h ffoffsets.h ffsounds.h ffen_g1.h ffen_g2.h ffen_g3.h ffen_g4.h ffen_g5.h ffen_g5b.h ffen_g5c.h ffen_g5d.h ffen_g6.h ffen_g6a.h ffen_g6b.h ffen_g6c.h ffen_g6d.h ffen_g6e.h ffen_g7.h ffen_g8.h ffen_g9.h ffen_g10.h ffen_g11.h ffen_g12.h ffen_g13.h; do [ -f "$HERE/$h" ] && cp "$HERE/$h" "$CPP/$h"; done
+# every header of the monster / machine / chest groups (ffen_g*.h) and the tables the C code includes: a glob, so a new group is never forgotten
+for h in "$HERE"/ffen_g*.h "$HERE"/ffenums.h "$HERE"/ffoffsets.h "$HERE"/ffsounds.h "$HERE"/ffvending_table.h; do [ -f "$h" ] && cp "$h" "$CPP/$(basename "$h")"; done
 cp "$HERE/ffmenu.c" "$CPP/ffmenu.c"
 cp "$HERE/ffcharmenu.c" "$CPP/ffcharmenu.c"
 cp "$HERE/ffsound.c" "$CPP/ffsound.c"
@@ -47,6 +48,7 @@ edit(C + 'loader.c',
 print("fiend folio modules applied")
 PY
 python3 "$HERE/ffwatch_patch.py" "$CPP/pack.c"
+python3 "$HERE/ffnoise_patch.py" "$CPP/loader.c"
 # the console: Fiend Folio's monsters in the ENEMIES tab (ffenemies_table.h is written by tools/spawner_ff_enemies.py)
 cp "$HERE/ffenemies_table.h" "$CPP/ffenemies_table.h"
 python3 "$HERE/ffconsole_patch.py" "$CPP"

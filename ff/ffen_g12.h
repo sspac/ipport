@@ -121,7 +121,7 @@ static void sl_scatter(unsigned long e, sd_t *d, int var, int sub, float x, floa
     en_spawn(5, var, x, y, vx, vy, e, sub);
 }
 static void sl_free_pos(float x, float y, float *ox, float *oy) { *ox = x; *oy = y; }                       /* Room:FindFreePickupSpawnPosition: the pedestal goes where asked (the room's own rule moves it off rocks when it spawns) */
-#define SL_NOTDONE(...) ENLOG(70, 24, "ffslot: not done: " __VA_ARGS__)
+#define SL_NOTDONE(msg) FFLOG(FFC_NOT_DONE, 70000 + __LINE__, "ffslot: not done: %s", msg)      /* msg is data, never the format (two of them hold a %) */
 
 /* ============================================================================================ Penny Press 6.1043 (ferrium/items/slots/pennypress.lua)
  * Idle1 -> (11 coins) Initiate (clapping, a trinket at its Prize event) -> Idle2. A bomb breaks it (Death) and it pays coins. state: 0 Idle, 1 Playing, 2 Played, 3 Broken */
@@ -817,11 +817,12 @@ static void sl_wager(en_t *s, unsigned long e) {                                
     en_play(s, a);
 }
 
+#include "ffen_g14.h"
 /* ============================================================================================ the tick */
 typedef void (*sl_fn)(en_t *, unsigned long);
 static const struct { int var; sl_fn fn; } SL_TAB[] = {
     { SLV_PENNY, sl_penny }, { SLV_DICE, sl_dice }, { SLV_JUKEBOX, sl_jukebox }, { SLV_HUG, sl_hug }, { SLV_CELL, sl_cell },
-    { SLV_POKER, sl_poker }, { SLV_AMETH, sl_amethyst }, { SLV_AMETHF, sl_amethyst }, { SLV_ZODIAC, sl_zodiac }, { SLV_EVIL, sl_evil }, { SLV_ROBOT, sl_robot }, { SLV_RESTOCK, sl_restock }, { SLV_SMITH, sl_smith },
+    { SLV_POKER, sl_poker }, { SLV_AMETH, sl_amethyst }, { SLV_AMETHF, sl_amethyst }, { SLV_ZODIAC, sl_zodiac }, { SLV_EVIL, sl_evil }, { SLV_ROBOT, sl_robot }, { SLV_RESTOCK, sl_restock }, { SLV_SMITH, sl_smith }, { SLV_VEND, sl_vend },
 };
 static sl_fn sl_find(int var) { for (unsigned i = 0; i < sizeof SL_TAB / sizeof SL_TAB[0]; i++) if (SL_TAB[i].var == var) return SL_TAB[i].fn; return 0; }
 static void en_g12_tick(void) {
@@ -835,6 +836,7 @@ static void en_g12_tick(void) {
         en_t *s = en_slot(e);
         if (s->init) sl_tick_frames(s);
         fn(s, e);
+        en_state_watch(s);
         if (!alive(e) || s->e != e) continue;
         s->age++; sl_sprite(s, e);
     }

@@ -285,6 +285,7 @@ static void en_g13_tick(void) {
             en_t *s = en_slot(e);
             if (s->init) sl_tick_frames(s);
             CH_TAB[i].fn(s, e);
+            en_state_watch(s);
             if (alive(e) && s->init) { s->age++; sl_sprite(s, e); }
             break;
         }

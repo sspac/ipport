@@ -853,6 +853,7 @@ static void fb_player_frame(unsigned long p, void (*orig)(unsigned long)) {
     orig(p);
     fb_after_update(p);
     grid_dump_tick();
+    ffroom_tick();
     if (ffheart_poll) ffheart_poll();
 }
 #ifndef FF_HOST_TEST
@@ -896,6 +897,7 @@ static int w_npc_take(unsigned long e, float dmg, unsigned long long flags, void
     return r;
 }
 #define FN_HAS_COLLECTIBLE_FB 0x4eeb74
+#define FN_USE_ACTIVE_ITEM 0x500588      /* Player::UseActiveItem(player, item, flags, showAnim, slot, varData): the engine's own calls (card / item code at 0x507f4c, 0x5418d8...) pass (item, -1|0, 1|0, 0, 0) */
 #define FN_SPRITE_REPLACE_FB 0x8a0228      /* Sprite::ReplaceSpritesheet(this, int layer, std::string const *)  - marked.c */
 #define FN_SPRITE_GRAPHICS_FB 0x8a0284     /* Sprite::LoadGraphics(this, 0) */
 #define FN_SPRITE_LOAD 0x89fe24            /* Sprite::Load(this, std::string const *anm2, bool loadGraphics): the Lua's Sprite:Load(path, true); seen called with 'gfx/ui/minimap1.anm2', (x20=sprite+0x18, str, 1) at 0x577b5c */
@@ -953,6 +955,7 @@ void shim_ffminion_install(unsigned char *base) {
     LOG("ffminion: Pickup::Update wrapped (vtable slot 4)");
     g_trigger = fb_real_trigger; g_frame_fn = fb_real_frame;
     g_has_item = (int (*)(unsigned long, int, int)) (g_base + FN_HAS_COLLECTIBLE_FB);
+    g_use_active = (void (*)(unsigned long, int, int, int, int, int)) (g_base + FN_USE_ACTIVE_ITEM);
     g_sheet = fb_real_sheet;
     g_load = fb_real_load;
     g_sheet_l = fb_real_sheet_l;

@@ -24,6 +24,7 @@ typedef struct {
     float f[12]; int i[12]; unsigned long ref, ref2, ref3; int nocarry, hurt_block;
     float po[2]; int la_on, la_hasvel; float la_z, la_acc, la_h, la_vx, la_vy, la_col;   /* Entity.PositionOffset the AI asked for (added to the SpriteOffset) and the launched-enemy state (ferrium/misc/launchedStuff.lua) */
     float so[2]; int so_on;                                               /* the SpriteOffset the AI asked for, re-applied after the engine's update */
+    float lastva, lastp[2], dframe, still_dist, lastov; int still, blocked, mv_age, gap_done, st_seen, last_state, dprobe, ovs_n, srun, born; char first_anim[32], mv_anim[32];   /* the log probes (FFC_SPEED/STUCK/AI_TARGET/ANIM_GAP/DEATH/SPRITE_STATIC): the AI's last speed, where the last tick ended, how long it has stood still / been blocked */
     int flaming; float lastreal; int stuck, driven;                                   /* en_sprite_sync: the engine's own frame last tick, how long it has not moved, and whether the port sets the frame itself */
 } en_t;
 static en_t g_en[EN_N];
@@ -36,6 +37,32 @@ static const ffa_t *ffa_find(unsigned key, const char *name) {
     unsigned k0 = key & ~15u;                           /* the monster's other subtypes share the sheet of subtype 0 */
     if (k0 != key) for (const ffa_t *a = ffa_tab; a->name; a++) if (a->key == k0 && !strcmp(a->name, name)) return a;
     return 0;
+}
+/* ---- the log's view of the room (ffsay.h categories). The engine's RoomShape id is NOT measured in this port: what is known is the grid
+ * (room+0x14 x room+0x18 tiles, the collision table at room+0xe98), so a room is described by its grid size and where its non-wall tiles are
+ * - enough to tell a 1x1 from an L, an I or a 2x2 in the log. */
+#if ISAAC_DIAG
+static unsigned long ffl_room_key(void) {
+    unsigned long r = g_room ? g_room() : 0, k = 0;
+    if (!r || !safe_copy(&k, (const void *) (r + 8), 8)) return 0;
+    return k;                                                   /* Room+8 = the room's descriptor: one per room of a floor (eid_craft.c) */
+}
+static void ffl_room_desc(char *b, size_t n) {
+    if (!g_gw || !g_gh) { snprintf(b, n, "grid unknown"); return; }
+    int open = 0, c0 = 999, c1 = -1, r0 = 999, r1 = -1;
+    for (int r = 0; r < g_gh; r++) for (int c = 0; c < g_gw; c++) {
+        if (g_cells[c + r * g_gw] >= g_wallv) continue;
+        open++; if (c < c0) c0 = c; if (c > c1) c1 = c; if (r < r0) r0 = r; if (r > r1) r1 = r;
+    }
+    snprintf(b, n, "grid %dx%d, %d non-wall tiles in cols %d..%d rows %d..%d", g_gw, g_gh, open, c0, c1, r0, r1);
+}
+#endif
+static void en_state_watch(en_t *s) {                          /* STATE: every change of a machine's / monster's state number */
+    if (!s->st_seen) { s->st_seen = 1; s->last_state = s->state; return; }
+    if (s->state != s->last_state) {
+        FFLOG(FFC_STATE, FFKEY(s->type, s->variant), "%d.%d.%d state %d -> %d (anim '%s', age %d)", s->type, s->variant, s->sub, s->last_state, s->state, s->anim, s->age);
+        s->last_state = s->state;
+    }
 }
 static en_t *en_slot(unsigned long e) {
     int free = -1;
@@ -50,6 +77,10 @@ static en_t *en_slot(unsigned long e) {
     en_t *s = &g_en[free]; memset(s, 0, sizeof *s);
     s->e = e; s->type = *(const int *) (e + E_TYPE); s->variant = *(const int *) (e + E_VARIANT); s->sub = *(const int *) (e + E_SUBTYPE);
     s->key = ((unsigned) s->type << 20) | ((unsigned) s->variant << 4) | ((unsigned) s->sub & 15u);
+#if ISAAC_DIAG
+    { char rd[110]; ffl_room_desc(rd, sizeof rd);
+      FFLOG(FFC_SPAWN, FFKEY(s->type, s->variant), "%d.%d.%d at (%.0f,%.0f) room %lx %s HANDLER=yes", s->type, s->variant, s->sub, fpos(e)[0], fpos(e)[1], ffl_room_key(), rd); }
+#endif
     return s;
 }
 
@@ -72,7 +103,7 @@ static void en_play(en_t *s, const char *name) {
     s->af = 0;
     const ffa_t *a = ffa_find(s->key, name);
     s->alen = a ? a->len : 0; s->aloop = a ? a->loop : 1;
-    if (!a) ENLOG(5, 12, "ffenemy: %d.%d has no animation '%s' in the table", s->type, s->variant, name);
+    if (!a) FFLOG(FFC_ASSET_MISSING, FFKEY(s->type, s->variant), "%d.%d has no animation '%s' in the table (ffanim_table.h)", s->type, s->variant, name);
     g_play((void *) (s->e + E_SPRITE), name, 1);
 }
 static void en_replay(en_t *s, const char *name) { s->anim[0] = 0; en_play(s, name); }   /* Lua sprite:Play(name, true) */
@@ -94,7 +125,7 @@ static int en_was_event(const en_t *s, const char *name, const char *ev) {
 #include "ffoffsets.h"     /* engine field offsets, each measured and commented with how (agent: RE primitives) */
 #include "ffsounds.h"      /* FFSND_<key of mod.Sounds> = the sound id the port registered for it (ffsound.c) */
 /* ---------------------------------------------------------------------------------- engine fields (an offset of 0 in ffoffsets.h = not measured: the accessor logs once and does nothing) */
-#define EN_FIELD(name, off) static int name##_ok(void) { if (!(off)) { ENLOG(14, 40, "ffenemy: not done: field %s is not measured", #name); return 0; } return 1; }
+#define EN_FIELD(name, off) static int name##_ok(void) { if (!(off)) { FFLOG(FFC_NOT_DONE, 14000 + __LINE__, "ffenemy: not done: field %s is not measured", #name); return 0; } return 1; }
 EN_FIELD(npc_state, OFF_NPC_STATE) EN_FIELD(npc_statef, OFF_NPC_STATEFRAME) EN_FIELD(npc_i1, OFF_NPC_I1) EN_FIELD(npc_i2, OFF_NPC_I2)
 EN_FIELD(npc_v1, OFF_NPC_V1) EN_FIELD(npc_v2, OFF_NPC_V2) EN_FIELD(npc_pcd, OFF_NPC_PROJCD) EN_FIELD(npc_pdelay, OFF_NPC_PROJDELAY) EN_FIELD(npc_scale, OFF_NPC_SCALE)
 EN_FIELD(ent_coll, OFF_ENT_COLLCLASS) EN_FIELD(ent_gcoll, OFF_ENT_GRIDCOLL) EN_FIELD(ent_friction, OFF_ENT_FRICTION) EN_FIELD(ent_mass, OFF_ENT_MASS) EN_FIELD(ent_target, OFF_ENT_TARGET)
@@ -195,7 +226,7 @@ static unsigned long en_shoot_p(unsigned long e, float x, float y, float vx, flo
     if (pp->has_faccel_mod && proj_faccel_ok()) *(float *) (pr + OFF_PROJ_FALLINGACCEL) += pp->faccel_mod;
     if (pp->has_fspeed_mod && proj_fspeed_ok()) *(float *) (pr + OFF_PROJ_FALLINGSPEED) += pp->fspeed_mod;
     if (pp->has_height_mod && proj_height_ok()) *(float *) (pr + OFF_PROJ_HEIGHT) += pp->height_mod;
-    if (pp->has_curving) ENLOG(15, 3, "ffenemy: not done: ProjectileParams.CurvingStrength (field not measured)");
+    if (pp->has_curving) FFLOG(FFC_NOT_DONE, 15, "ffenemy: not done: ProjectileParams.CurvingStrength (field not measured)");
     if (pp->has_height && proj_height_ok()) *(float *) (pr + OFF_PROJ_HEIGHT) = pp->height;
     if (pp->has_fspeed && proj_fspeed_ok()) *(float *) (pr + OFF_PROJ_FALLINGSPEED) = pp->fspeed;
     if (pp->has_faccel && proj_faccel_ok()) *(float *) (pr + OFF_PROJ_FALLINGACCEL) = pp->faccel;
@@ -257,7 +288,7 @@ static void ai_squarefly(en_t *s, unsigned long e) {
     const float speed = 4.5f;
     en_play(s, "Fly");
     float mv1 = t[0] - p[0] > 0 ? 2 : 1, mv3 = t[0] - p[0] > 0 ? 1 : 2, mv2 = t[1] - p[1] > 0 ? 2 : 1, mv4 = t[1] - p[1] > 0 ? 1 : 2;
-    if (!s->init) { s->init = 1; if (s->sub & 1) ENLOG(7, 2, "ffenemy: not done: Square Fly's counter-clockwise sheet (Sprite::Load)"); }
+    if (!s->init) { s->init = 1; if (s->sub & 1) FFLOG(FFC_NOT_DONE, 7, "ffenemy: not done: Square Fly's counter-clockwise sheet (Sprite::Load)"); }
     if (!s->i[0]) { s->cd = 1; s->dir = ((s->sub >> 1) & 3) + 1; s->i[0] = 1; }
     else {
         float tx = 0, ty = 0;
@@ -306,7 +337,7 @@ static void ai_slobber(en_t *s, unsigned long e) {
             en_pp_t pp; memset(&pp, 0, sizeof pp); pp.vel_multi = 7.0f;       /* 9 on Hard/Greedier (Difficulty % 2 == 1): the difficulty is not read here, normal assumed */
             unsigned long ef = en_spawn(1000, 2, p[0], p[1], 0, 0, e, 5);
             (void) ef;
-            ENLOG(16, 3, "ffenemy: not done: Slobber's mouth effect SpriteOffset/DepthOffset/Color/FollowParent");
+            FFLOG(FFC_NOT_DONE, 16, "ffenemy: not done: Slobber's mouth effect SpriteOffset/DepthOffset/Color/FollowParent");
             if (s->variant == 2100) pp.variant = 4;
             if (s->variant == 2101 && s->af >= 36) { pp.has_scale = 1; pp.scale = 1.4f; }
             en_shoot_p(e, p[0], p[1], x, y, &pp);
@@ -393,7 +424,7 @@ static void ai_buttfly(en_t *s, unsigned long e) {
         if (en_finished(s, "Shoot")) { s->state = 0; s->cd = rint_(30, 45); s->anim[0] = 0; en_play(s, "Fly"); }
         else if (en_event(s, "Shoot", "Shoot")) {
             en_spawn(1000, 34, p[0], p[1], 0, 0, e, 0);                       /* game:ButterBeanFart(pos, 60, ...): the cloud; its push of the others is not done */
-            ENLOG(9, 2, "ffenemy: not done: ButterBeanFart's knock-back and poison of the others around");
+            FFLOG(FFC_NOT_DONE, 9, "ffenemy: not done: ButterBeanFart's knock-back and poison of the others around");
             float x, y; vrot(v[0], v[1], s->f[2], &x, &y); vresize(&x, &y, 8.0f); v[0] = x; v[1] = y;
         } else en_play(s, "Shoot");
         if (!en_was_event(s, "Shoot", "Shoot")) { v[0] *= 0.85f; v[1] *= 0.85f; }
@@ -419,7 +450,7 @@ static void ai_shotfly(en_t *s, unsigned long e) {
     if (!s->init) {
         s->init = 1; en_play(s, "Fly");
         if (s->state == 2 || s->i[1]) { en_flag_set(e, EF_FLAG_NO_PHYSICS_KNOCKBACK); en_set_collision(e, ENTCOLL_PLAYEROBJECTS); }      /* data.Charging / ForceVec */
-        ENLOG(10, 2, "ffenemy: not done: Shot Fly's wait-then-descend subtype (data.waited)");
+        FFLOG(FFC_NOT_DONE, 10, "ffenemy: not done: Shot Fly's wait-then-descend subtype (data.waited)");
     }
     if (s->state == 2) {                                                       /* charging */
         if (!s->i[3]) { s->i[3] = 1; en_sound(FFSND_Ricochet, 0.7f, 0.8f); }
@@ -480,7 +511,7 @@ static void splat_at(unsigned long e, float sc, int n) {
 }
 static void creep_at(unsigned long e, float sc) {
     float *p = fpos(e); unsigned long c = en_spawn(1000, 22, p[0], p[1], 0, 0, e, 0); if (c) en_scale(c, sc, sc);
-    ENLOG(11, 2, "ffenemy: not done: creep Timeout (the creep keeps the game's default lifetime)");
+    FFLOG(FFC_NOT_DONE, 11, "ffenemy: not done: creep Timeout (the creep keeps the game's default lifetime)");
 }
 static int en_has_path(unsigned long e, const float *t) {                       /* npc.Pathfinder:HasPathToPos(target, false) */
     float *p = fpos(e), wx, wy;
@@ -502,7 +533,7 @@ static void ai_casualty(en_t *s, unsigned long e) {                             
         if (fb_hp(e) <= *(const float *) (e + 0x358) * 0.5f) s->state = 1;
     } else if (s->state == 1) {
         if (en_was_event(s, "Trip", "Shoot")) { v[0] *= 0.6f; v[1] *= 0.6f; } else { v[0] *= 0.9f; v[1] *= 0.9f; }
-        if (en_finished(s, "Trip")) { s->state = 2; ENLOG(12, 2, "ffenemy: not done: Casualty's CanShutDoors = false (the corpse still counts for the room)"); }
+        if (en_finished(s, "Trip")) { s->state = 2; FFLOG(FFC_NOT_DONE, 12, "ffenemy: not done: Casualty's CanShutDoors = false (the corpse still counts for the room)"); }
         else if (en_event(s, "Trip", "Move")) { en_sound(SOUND_FETUS_JUMP, 1.0f, 1.0f); float x = t[0] - p[0], y = t[1] - p[1]; vresize(&x, &y, 10.0f); if (en_scared(e)) { x = -x; y = -y; } v[0] = x; v[1] = y; en_flip(e, v[0] > 0.0f); }
         else if (en_event(s, "Trip", "Shoot")) {
             en_sound(SOUND_MEAT_IMPACTS, 1.0f, 1.0f); v[0] *= 0.5f; v[1] *= 0.5f; creep_at(e, 3.0f); splat_at(e, 1.5f, 1);
@@ -546,7 +577,7 @@ static void ai_eternalfly(en_t *s, unsigned long e) {
         s->init = 1; s->cd = 0; s->i[1] = 0; s->f[1] = s->f[0] ? s->f[0] : (float) rint_(1, 75);
         en_set_collision(e, ENTCOLL_PLAYEROBJECTS); en_set_gridcoll(e, GRIDCOLL_NONE);                      /* the Lua's d.init */
         en_flag_clear(e, EF_FLAG_APPEAR); en_flag_set(e, EF_FLAG_NO_STATUS_EFFECTS | EF_FLAG_NO_TARGET);
-        ENLOG(13, 2, "ffenemy: not done: Eternal Fly's TeleportIn/TeleportOut when the parent has an OverlayEffect null, the subtype 1 chase, charm of a friendly parent");
+        FFLOG(FFC_NOT_DONE, 13, "ffenemy: not done: Eternal Fly's TeleportIn/TeleportOut when the parent has an OverlayEffect null, the subtype 1 chase, charm of a friendly parent");
     }
     en_play(s, "Fly");
     unsigned long par = en_parent_alive(s->ref);
@@ -698,7 +729,7 @@ static struct { unsigned long e; int kind, age, len; float a; } g_fx[FX_N];
 static unsigned long en_fx_add(unsigned long e, int kind, int len, float a) {
     if (!e) return 0;
     for (int k = 0; k < FX_N; k++) if (!g_fx[k].e || !alive(g_fx[k].e)) { g_fx[k].e = e; g_fx[k].kind = kind; g_fx[k].age = 0; g_fx[k].len = len; g_fx[k].a = a; return e; }
-    ENLOG(73, 1, "ffenemy: not done: more than %d tracked effects at once (the extra one is dropped: %d)", FX_N, kind);
+    FFLOG(FFC_NOT_DONE, 73, "ffenemy: not done: more than %d tracked effects at once (the extra one is dropped: %d)", FX_N, kind);
     if (kind == FX_POOF) en_remove(e);
     return 0;
 }
@@ -796,6 +827,118 @@ static const enemy_t *en_find(int type, int variant) {
 }
 
 
+/* ---- the log's census of a room (ROOM, SPAWN HANDLER=no / UNHANDLED, GRID_COLLISION, GRID_SAVE / GRID_RESTORE / GRID_LOST).
+ * "Looks like Fiend Folio" = a row of ffenemies_table.h (the monsters the console lists), a slot variant >= 1000 or a 183/184 variant >= 1000
+ * (the NPC pseudo-grids of ffen_g8.h / g9 / g10). It is a census of what the port can recognise, not of every entity of the mod's XML. */
+#if ISAAC_DIAG
+typedef struct { int type, variant, sub, grp, id, a, b, c, d, e; const char *nm[7]; } ffl_row_t;
+#define SP_GROUP_FF 0
+#define FF_ENEMY_BODY
+static const ffl_row_t g_ffl_rows[] = {
+#include "ffenemies_table.h"
+};
+#undef FF_ENEMY_BODY
+#undef SP_GROUP_FF
+#endif
+static int ffl_ff_like(int type, int var) {
+#if ISAAC_DIAG
+    for (unsigned i = 0; i < sizeof g_ffl_rows / sizeof g_ffl_rows[0]; i++) if (g_ffl_rows[i].type == type && g_ffl_rows[i].variant == var) return 1;
+    if (type == 6 || type == 183 || type == 184) return var >= 1000;
+#else
+    (void) type; (void) var;
+#endif
+    return 0;
+}
+#if ISAAC_DIAG
+#define FFG_ROOMS 48
+#define FFG_ITEMS 40
+typedef struct { unsigned long key; int n; struct { int type, var, sub; float x, y; } it[FFG_ITEMS]; } ffg_t;
+static ffg_t g_ffg[FFG_ROOMS]; static int g_ffg_next, g_ffg_floor = -1;
+static unsigned long g_rt_key; static int g_rt_ticks, g_rt_frames;
+static int ffl_is_grid_npc(int type, int var) { return (type == 183 || type == 184) && var >= 1000; }
+static ffg_t *ffg_of(unsigned long key, int create) {
+    for (int i = 0; i < FFG_ROOMS; i++) if (g_ffg[i].key == key) return &g_ffg[i];
+    if (!create) return 0;
+    ffg_t *g = &g_ffg[g_ffg_next++ % FFG_ROOMS]; memset(g, 0, sizeof *g); g->key = key; return g;
+}
+/* the grid-like entities alive now, remembered for this room (what GRID_SAVE keeps and the next visit is compared with) */
+static int ffg_remember(unsigned long key, const unsigned long *snap, unsigned n) {
+    ffg_t *g = ffg_of(key, 1); g->n = 0;
+    for (unsigned k = 0; k < n && g->n < FFG_ITEMS; k++) {
+        unsigned long o = snap[k]; if (!alive(o)) continue;
+        int ty = *(const int *) (o + E_TYPE), va = *(const int *) (o + E_VARIANT);
+        if (!ffl_is_grid_npc(ty, va)) continue;
+        int i = g->n++; g->it[i].type = ty; g->it[i].var = va; g->it[i].sub = *(const int *) (o + E_SUBTYPE); g->it[i].x = fpos(o)[0]; g->it[i].y = fpos(o)[1];
+    }
+    return g->n;
+}
+static void ffroom_tick(void) {
+    unsigned long key = ffl_room_key();
+    if (!key) return;
+    unsigned long game = en_game();
+    int floor = game ? *(const int *) game * 16 + *(const int *) (game + 4) : 0;
+    if (floor != g_ffg_floor) { memset(g_ffg, 0, sizeof g_ffg); g_ffg_floor = floor; g_ffg_next = 0; }
+    g_rt_frames++;
+    if (key != g_rt_key) {
+        if (g_rt_key) {
+            ffg_t *g = ffg_of(g_rt_key, 0); char rd[110]; ffl_room_desc(rd, sizeof rd);
+            FFLOG(FFC_ROOM, (unsigned) g_rt_key, "left room %lx after %d ticks; %d FF monsters/machines tracked; %d grid-like entities kept for it", g_rt_key, g_rt_ticks, ({ int c = 0; for (int i = 0; i < EN_N; i++) if (g_en[i].e) c++; c; }), g ? g->n : 0);
+            if (g) FFLOG(FFC_GRID_SAVE, (unsigned) g_rt_key, "room %lx: %d grid-like entities saved on leaving", g_rt_key, g->n);
+            ff_log_summary("room exit");
+        }
+        g_rt_key = key; g_rt_ticks = 0;
+    }
+    g_rt_ticks++;
+    if (g_rt_ticks == 12) {                              /* a few ticks after entering, when the room's entities exist */
+        unsigned long snap[SNAP]; unsigned n = snapshot(snap); char rd[110]; ffl_room_desc(rd, sizeof rd);
+        int total = 0, ff = 0, noh = 0, grids = 0;
+        for (unsigned k = 0; k < n; k++) {
+            unsigned long o = snap[k]; if (!alive(o)) continue;
+            int ty = *(const int *) (o + E_TYPE), va = *(const int *) (o + E_VARIANT); total++;
+            if (!ffl_ff_like(ty, va)) continue;
+            ff++;
+            int handled = en_find(ty, va) != 0 || (ty == 6 && sl_find(va) != 0);
+            if (!handled) {
+                noh++;
+                FFLOG(FFC_SPAWN, FFKEY(ty, va), "%d.%d.%d at (%.0f,%.0f) room %lx %s HANDLER=NO", ty, va, *(const int *) (o + E_SUBTYPE), fpos(o)[0], fpos(o)[1], key, rd);
+                FFLOG(FFC_UNHANDLED, FFKEY(ty, va), "%d.%d.%d is in the room and no handler of the port runs it", ty, va, *(const int *) (o + E_SUBTYPE));
+            }
+            if (ffl_is_grid_npc(ty, va)) {
+                grids++;
+                unsigned raw = g_gw ? grid_raw_at(fpos(o)[0], fpos(o)[1]) : 0xfffeu;
+                float size = *(const float *) (o + E_SIZE);
+                FFLOG(FFC_GRID_COLLISION, FFKEY(ty, va), "%d.%d.%d at (%.0f,%.0f): size %.1f%s, grid class %d, collision class %d, engine tile under it %s%u",
+                      ty, va, *(const int *) (o + E_SUBTYPE), fpos(o)[0], fpos(o)[1], (double) size, size < 38.0f ? " (LESS than a 40 px tile: its corners can be crossed)" : "",
+                      ent_gcoll_ok() ? *(const int *) (o + OFF_ENT_GRIDCOLL) : -1, ent_coll_ok() ? *(const int *) (o + OFF_ENT_COLLCLASS) : -1, raw >= 0xfffeu ? "n/a " : "", raw >= 0xfffeu ? 0u : raw);
+            }
+        }
+        /* the persistence check: what this room kept when it was left, against what is here now */
+        ffg_t *g = ffg_of(key, 0);
+        if (g && g->n) {
+            int back = 0;
+            for (int i = 0; i < g->n; i++) {
+                int found = 0;
+                for (unsigned k = 0; k < n && !found; k++) {
+                    unsigned long o = snap[k]; if (!alive(o)) continue;
+                    if (*(const int *) (o + E_TYPE) == g->it[i].type && *(const int *) (o + E_VARIANT) == g->it[i].var && vlen(fpos(o)[0] - g->it[i].x, fpos(o)[1] - g->it[i].y) < 12.0f) found = 1;
+                }
+                if (found) back++;
+                else FFLOG(FFC_GRID_LOST, FFKEY(g->it[i].type, g->it[i].var), "room %lx: %d.%d.%d at (%.0f,%.0f) was there when the room was left and is not now (destroyed by the player, or not restored)", key, g->it[i].type, g->it[i].var, g->it[i].sub, g->it[i].x, g->it[i].y);
+            }
+            FFLOG(FFC_GRID_RESTORE, (unsigned) key, "room %lx: %d of %d grid-like entities saved on leaving are back", key, back, g->n);
+        }
+        ffg_remember(key, snap, n);
+        FFLOG(FFC_ROOM, (unsigned) key, "entered room %lx floor %d: %s; %d entities, %d look like Fiend Folio (%d with no handler), %d grid-like; revisit: %s", key, floor, rd, total, ff, noh, grids, g ? "yes" : "first visit");
+    } else if (g_rt_ticks > 12 && g_rt_ticks % 30 == 0) {   /* keep the room's grid-like list current while we are in it */
+        unsigned long snap[SNAP]; unsigned n = snapshot(snap); ffg_remember(key, snap, n);
+    }
+    if (g_rt_frames % 3600 == 0) ff_log_summary("every minute");      /* the app has no exit hook: the totals are repeated every minute of play */
+}
+#else
+static void ffroom_tick(void) { }
+#endif
+
+
 static fn_update o_npc_update;
 static void en_sweep(void) {
     for (int i = 0; i < EN_N; i++) if (g_en[i].e && (!*(const unsigned char *) (g_en[i].e + E_EXISTS) || *(const int *) (g_en[i].e + E_TYPE) != g_en[i].type)) g_en[i].e = 0;
@@ -860,14 +1003,86 @@ static void ht_trace(unsigned long e) {       /* at the start of every NPC updat
         LOG("ffenemy: hit trace %d.%d +%d: pos (%.0f,%.0f) velocity (%.2f,%.2f) |v| %.2f", g_ht[i].type, g_ht[i].variant, g_ht[i].age, fpos(e)[0], fpos(e)[1], fvel(e)[0], fvel(e)[1], vlen(fvel(e)[0], fvel(e)[1]));
     }
 }
+#if ISAAC_DIAG
+/* What the log asks of every FF monster, each tick after the engine's update: pa = where the AI left it, va = the velocity the AI left,
+ * p = where the engine ended it. SPEED (real move vs what the AI asked), SPEED_SPIKE (more than 1.5x), TELEPORT (a jump the AI made),
+ * STUCK (wants to move, does not), AI_TARGET (stands still with a target / how far the player was when it woke), ANIM_GAP. */
+static void en_probe(en_t *s, unsigned long e, const enemy_t *d, const float *pa, const float *va) {
+    float *p = fpos(e), *v = fvel(e);
+    float mx = p[0] - pa[0], my = p[1] - pa[1], real = vlen(mx, my), want = vlen(va[0], va[1]), eng = vlen(v[0], v[1]);
+    float *pl = en_target(e); float dist = pl ? vlen(pl[0] - p[0], pl[1] - p[1]) : -1.0f;
+    unsigned key = FFKEY(s->type, s->variant);
+    if (!s->born) { s->born = 1; snprintf(s->first_anim, sizeof s->first_anim, "%s", s->anim); }
+    if (s->age > 1 && vlen(pa[0] - s->lastp[0], pa[1] - s->lastp[1]) > 100.0f) {          /* TELEPORT: the AI set a position far from where the last tick ended */
+        char rd[110]; ffl_room_desc(rd, sizeof rd);
+        FFLOG(FFC_TELEPORT, key, "%d.%d.%d asked to go from (%.0f,%.0f) to (%.0f,%.0f), the engine left it at (%.0f,%.0f); state %d anim '%s'; %s",
+              s->type, s->variant, s->sub, s->lastp[0], s->lastp[1], pa[0], pa[1], p[0], p[1], s->state, s->anim, rd);
+    }
+    s->lastp[0] = p[0]; s->lastp[1] = p[1];
+    if (want > 0.3f && (s->age == 3 || s->age % 90 == 0))
+        FFLOG(FFC_SPEED, key, "%d.%d.%d age %d: AI asks %.2f px/tick, it moved %.2f, engine velocity %.2f, player %.0f px away, state %d anim '%s'", s->type, s->variant, s->sub, s->age, want, real, eng, dist, s->state, s->anim);
+    if (real > 3.0f && real > 1.5f * (want > 0.5f ? want : 0.5f)) {
+        int ai_grew = s->lastva > 0.3f && want > 1.5f * s->lastva;
+        FFLOG(FFC_SPEED_SPIKE, key, "%d.%d.%d moved %.2f px in one tick, the AI asked %.2f (last tick %.2f, %s), engine velocity %.2f, player %.0f px away, state %d anim '%s' age %d",
+              s->type, s->variant, s->sub, real, want, s->lastva, ai_grew ? "the AI's own velocity grew" : "the AI did not ask for more: the engine moved it", eng, dist, s->state, s->anim, s->age);
+    }
+    s->lastva = want;
+    /* STUCK: it wants to move and does not (20 ticks) - what is in the way: the cell in that direction, and the entity standing there */
+    if (want > 0.3f && real < 0.1f * want) s->blocked++; else s->blocked = 0;
+    if (s->blocked == 20) {
+        float dx = va[0] / want, dy = va[1] / want, qx = p[0] + dx * 24.0f, qy = p[1] + dy * 24.0f;
+        unsigned raw = g_gw ? grid_raw_at(qx, qy) : 0xfffeu;
+        unsigned long snap[SNAP]; unsigned n = snapshot(snap); char who[80]; who[0] = 0; float best = 30.0f;
+        for (unsigned k = 0; k < n; k++) {
+            unsigned long o = snap[k]; if (o == e || !alive(o)) continue;
+            float dd = vlen(fpos(o)[0] - qx, fpos(o)[1] - qy);
+            if (dd < best) { best = dd; snprintf(who, sizeof who, "%d.%d.%d size %.0f", *(const int *) (o + E_TYPE), *(const int *) (o + E_VARIANT), *(const int *) (o + E_SUBTYPE), (double) *(const float *) (o + E_SIZE)); }
+        }
+        char rd[110]; ffl_room_desc(rd, sizeof rd);
+        FFLOG(FFC_STUCK, key, "%d.%d.%d wants (%.2f,%.2f) and has not moved for 20 ticks at (%.0f,%.0f); cell ahead (%.0f,%.0f) collision %s%u; entity there: %s; own grid class %d, collision class %d; state %d anim '%s'; %s",
+              s->type, s->variant, s->sub, va[0], va[1], p[0], p[1], qx, qy, raw >= 0xfffeu ? "outside the table/no grid " : "", raw >= 0xfffeu ? 0u : raw, who[0] ? who : "none within 30 px",
+              ent_gcoll_ok() ? *(const int *) (e + OFF_ENT_GRIDCOLL) : -1, ent_coll_ok() ? *(const int *) (e + OFF_ENT_COLLCLASS) : -1, s->state, s->anim, rd);
+    }
+    /* AI_TARGET: with a player in the room it neither asks for nor makes any move for 90 ticks; and when it moves again, how far the player is */
+    if (pl && want < 0.05f && real < 0.05f) {
+        s->still++;
+        if (s->still == 90) {
+            s->still_dist = dist;
+            FFLOG(FFC_AI_TARGET, key, "%d.%d.%d has stood still 90 ticks with the player %.0f px away; line of sight ground %d / flying %d; state %d anim '%s' cd %d age %d%s",
+                  s->type, s->variant, s->sub, dist, g_gw ? line_clear(p[0], p[1], pl[0], pl[1], 0) : -1, g_gw ? line_clear(p[0], p[1], pl[0], pl[1], 1) : -1, s->state, s->anim, s->cd, s->age, d->free_move ? " (free mover)" : "");
+        }
+    } else {
+        if (s->still >= 90) FFLOG(FFC_AI_TARGET, key, "%d.%d.%d moved again after %d still ticks: player now %.0f px away (it was %.0f when it went still); state %d anim '%s'", s->type, s->variant, s->sub, s->still, dist, s->still_dist, s->state, s->anim);
+        s->still = 0;
+    }
+    /* ANIM_GAP: ticks from the spawn to its first move, the animation it had then, and how long it slid before the animation changed */
+    if (!s->mv_age && real > 0.5f && want > 0.3f) {
+        s->mv_age = s->age ? s->age : 1; snprintf(s->mv_anim, sizeof s->mv_anim, "%s", s->anim);
+        FFLOG(FFC_ANIM_GAP, key, "%d.%d.%d first moved at tick %d (animation at spawn '%s', now '%s')", s->type, s->variant, s->sub, s->age, s->first_anim, s->anim);
+    } else if (s->mv_age && !s->gap_done) {
+        int gap = s->age - s->mv_age;
+        if (strcmp(s->anim, s->mv_anim)) { s->gap_done = 1; if (gap >= 4) FFLOG(FFC_ANIM_GAP, key, "%d.%d.%d slid %d ticks on '%s' before the animation became '%s'", s->type, s->variant, s->sub, gap, s->mv_anim, s->anim); }
+        else if (gap == 90) { s->gap_done = 1; FFLOG(FFC_ANIM_GAP, key, "%d.%d.%d is still on '%s' 90 ticks after it began to move (no walking animation was ever asked for)", s->type, s->variant, s->sub, s->mv_anim); }
+    }
+}
+#endif
 static void en_post(en_t *s, unsigned long e, const enemy_t *d, const float *pa, const float *va, const float *vb) {
     float *p = fpos(e), *v = fvel(e), mx = p[0] - pa[0], my = p[1] - pa[1];
     int gc = ent_gcoll_ok() ? *(const int *) (e + OFF_ENT_GRIDCOLL) : -1, cc = ent_coll_ok() ? *(const int *) (e + OFF_ENT_COLLCLASS) : -1;
     /* a safety net only, the Lua has nothing like it: a monster that ends up well outside the room's walls (a bug, never a normal move) is put back */
     if (!d->free_move && g_gw) {
         float x = p[0], y = p[1]; en_clamp_room(&x, &y, -60.0f);
-        if (x != p[0] || y != p[1]) { ENLOG(19, 24, "ffenemy: %d.%d at (%.0f,%.0f) was far outside the room: put back at (%.0f,%.0f)", s->type, s->variant, p[0], p[1], x, y); p[0] = x; p[1] = y; v[0] = 0; v[1] = 0; }
+        if (x != p[0] || y != p[1]) {
+#if ISAAC_DIAG
+            char rd[110]; ffl_room_desc(rd, sizeof rd);
+            FFLOG(FFC_OUT_OF_ROOM, FFKEY(s->type, s->variant), "%d.%d.%d at (%.0f,%.0f) was far outside the room: put back at (%.0f,%.0f); it was at (%.0f,%.0f) after the AI, last tick ended at (%.0f,%.0f); state %d anim '%s' age %d; %s",
+                  s->type, s->variant, s->sub, p[0], p[1], x, y, pa[0], pa[1], s->lastp[0], s->lastp[1], s->state, s->anim, s->age, rd);
+#endif
+            p[0] = x; p[1] = y; v[0] = 0; v[1] = 0; }
     }
+#if ISAAC_DIAG
+    en_probe(s, e, d, pa, va);
+#endif
     tel_t *t = tel_of(s->type, s->variant);
     if (t) {
         float want = vlen(va[0], va[1]); int moving = want > 0.3f;
@@ -933,11 +1148,33 @@ static void en_sprite_sync(en_t *s, unsigned long e) {
     int exp = s->aloop ? s->af % s->alen : (s->af < s->alen ? s->af : s->alen - 1);
     if (!s->driven && s->stuck >= 3) {
         s->driven = 1;
-        ENLOG(33, 40, "ffenemy: %d.%d: the engine's sprite frame sat at %.1f for %d ticks (playing %d, speed %.2f) while '%s' should be at %d/%d: the port sets the frame itself",
-              s->type, s->variant, real, s->stuck, *(const unsigned char *) (e + E_SPR_PLAYING), *(const float *) (e + E_SPRITE + 0x144), s->anim, exp, s->alen);
+        FFLOG(FFC_SPRITE_STATIC, FFKEY(s->type, s->variant), "%d.%d.%d: the engine's sprite frame sat at %.1f for %d ticks (playing %d, speed %.2f) while '%s' should be at %d/%d: the port sets the frame itself",
+              s->type, s->variant, s->sub, real, s->stuck, *(const unsigned char *) (e + E_SPR_PLAYING), *(const float *) (e + E_SPRITE + 0x144), s->anim, exp, s->alen);
     }
-    if (s->driven) { g_setframe((void *) (e + E_SPRITE), s->anim, exp); s->lastreal = *(const float *) (e + E_SPR_FRAME); }
+    if (s->driven) {
+        g_setframe((void *) (e + E_SPRITE), s->anim, exp); s->lastreal = *(const float *) (e + E_SPR_FRAME);
+#if ISAAC_DIAG
+        /* the frame the port asked for must be the one the sprite now holds, or SetFrame did not take (the frames would still look frozen) */
+        if ((int) s->lastreal != exp) { if (++s->srun == 10) FFLOG(FFC_SPRITE_STATIC, FFKEY(s->type, s->variant), "%d.%d.%d: SetFrame('%s', %d) did not take: the sprite reads frame %.1f 10 ticks in a row", s->type, s->variant, s->sub, s->anim, exp, s->lastreal); }
+        else s->srun = 0;
+#endif
+    }
 }
+#if ISAAC_DIAG
+/* the overlay animation (Woodburner's wood spin and the like): the engine's overlay frame must move while the port's own counter does. The overlay
+ * state sits at sprite+0x60 and its frame at state+0x20 (the main one is sprite+0x30 / +0x20 = entity+0xa0, measured) = entity+0xd0: DERIVED, not
+ * measured on its own. */
+static void en_overlay_watch(en_t *s, unsigned long e) {
+    if (!s->ov[0]) { s->ovs_n = 0; return; }
+    const ffa_t *a = ffa_find(s->key, s->ov);
+    if (!a || a->len < 2) return;
+    float ofr = *(const float *) (e + E_SPRITE + 0x80);
+    if (ofr == s->lastov) s->ovs_n++; else s->ovs_n = 0;
+    s->lastov = ofr;
+    if (s->ovs_n == 30) FFLOG(FFC_SPRITE_STATIC, FFKEY(s->type, s->variant), "%d.%d.%d: overlay '%s' (%d frames): the engine's overlay frame (entity+0xd0, derived offset) sat at %.1f for 30 ticks while the port's counter is at %d",
+                              s->type, s->variant, s->sub, s->ov, a->len, ofr, s->ovf);
+}
+#endif
 static void w_npc_update(unsigned long e) {
     en_piles_tick();
     int type = *(const int *) (e + E_TYPE);
@@ -952,13 +1189,28 @@ static void w_npc_update(unsigned long e) {
         float x0 = fpos(e)[0], y0 = fpos(e)[1];
         vb[0] = fvel(e)[0]; vb[1] = fvel(e)[1];
         if (en_dead(e)) {
-            if (!s->dead_done) { s->dead_done = 1; ENLOG(0, 24, "ffenemy: %d.%d dies (frame %d)", type, s->variant, s->age); if (d->die) d->die(s, e); }
+            if (!s->dead_done) {
+                s->dead_done = 1; ENLOG(0, 24, "ffenemy: %d.%d dies (frame %d)", type, s->variant, s->age); if (d->die) d->die(s, e);
+#if ISAAC_DIAG
+                { const ffa_t *da = ffa_find(s->key, "Death"); unsigned k = FFKEY(type, s->variant);
+                  s->dframe = *(const float *) (e + E_SPR_FRAME); s->dprobe = da ? 1 : 0;
+                  FFLOG(FFC_DEATH, k, "%d.%d.%d dies at age %d, pos (%.0f,%.0f), animation '%s' at frame %.1f; 'Death' in the table: %s", type, s->variant, s->sub, s->age, fpos(e)[0], fpos(e)[1], s->anim, (double) s->dframe, da ? "yes" : "NO");
+                  if (!da) FFLOG(FFC_DEATH_NO_ANIM, k, "%d.%d.%d has no 'Death' animation in the table: nothing to play when it dies", type, s->variant, s->sub); }
+#endif
+            }
+#if ISAAC_DIAG
+            if (s->dprobe && s->dead_age + 1 == 8) {                /* 8 ticks after dying the Death animation must have moved */
+                float fr = *(const float *) (e + E_SPR_FRAME);
+                if (fr - s->dframe < 1.0f && s->dframe - fr < 1.0f) FFLOG(FFC_DEATH_NO_ANIM, FFKEY(type, s->variant), "%d.%d.%d: 8 ticks after dying the engine's sprite frame is still %.1f (was %.1f at death; animation '%s', playing %d, speed %.2f)", type, s->variant, s->sub, (double) fr, (double) s->dframe, s->anim, *(const unsigned char *) (e + E_SPR_PLAYING), *(const float *) (e + E_SPRITE + 0x144));
+            }
+#endif
             /* the corpse is left to the engine. A monster the engine has no death code for (the Lua kills it with npc:Kill() and the engine waits for a "Death" animation these
              * anm2 files do not have) would stay for ever: alive, unhittable and counted by the room's clear check (ff-codigo47's bee). After 75 frames it is removed. */
             if (++s->dead_age == (d->corpse ? d->corpse : 75)) { if (!d->corpse) ENLOG(74, 24, "ffenemy: %d.%d was still in the room 75 frames after dying (HP <= 0): removed", type, s->variant); en_remove(e); }   /* corpse: a monster whose anm2 has no Death animation leaves after that many frames */
             s = 0;
         } else {
             if (d->ai) d->ai(s, e);
+            en_state_watch(s);
         }
         if (s) { s->age++; pa[0] = fpos(e)[0]; pa[1] = fpos(e)[1]; va[0] = fvel(e)[0]; va[1] = fvel(e)[1]; }
         (void) x0; (void) y0;
@@ -967,6 +1219,9 @@ static void w_npc_update(unsigned long e) {
     o_npc_update(e);
     if (d && *(const unsigned char *) (e + E_EXISTS)) en_sprite_tick(e, fb);
     if (s && d && *(const unsigned char *) (e + E_EXISTS) && s->e == e) en_sprite_sync(s, e);
+#if ISAAC_DIAG
+    if (s && d && *(const unsigned char *) (e + E_EXISTS) && s->e == e) en_overlay_watch(s, e);
+#endif
     if (s && s->so_on && *(const unsigned char *) (e + E_EXISTS) && s->e == e) en_apply_offsets(s, e);
     if (s && d && *(const unsigned char *) (e + E_EXISTS) && s->e == e) en_post(s, e, d, pa, va, vb);
     if ((g_ensweep++ & 255) == 0) en_sweep();
@@ -975,7 +1230,11 @@ static void w_npc_update(unsigned long e) {
 static int en_hurt(unsigned long e, float dmg) {               /* 1: the hit does not land (the Lua's Hurt callback returning false) */
     if (!g_en_on) return 0;
     const enemy_t *d = en_find(*(const int *) (e + E_TYPE), *(const int *) (e + E_VARIANT));
-    if (!d) return 0;
+    if (!d) {
+        int ty = *(const int *) (e + E_TYPE), va = *(const int *) (e + E_VARIANT);
+        if (ffl_ff_like(ty, va)) FFLOG(FFC_UNHANDLED, FFKEY(ty, va), "hit of %.1f on %d.%d.%d, which looks like a Fiend Folio entity and has no handler", (double) dmg, ty, va, *(const int *) (e + E_SUBTYPE));
+        return 0;
+    }
     en_t *hs = en_slot(e);
     if (d->hurt) d->hurt(hs, e, dmg);
     return d->immune || hs->hurt_block;
