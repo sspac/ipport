@@ -1,5 +1,5 @@
 /* Written by tools/ff_sounds.py - do not edit by hand. FFSND_<key> = the id to give ffsound_play; a sound with several parts (7 samples each) has FFSND_<key>_PARTS = n and the parts are consecutive ids. */
-#define FF_NSOUNDS_EXTRA 45
+#define FF_NSOUNDS_EXTRA 46
 #define FFSND_BaloonShort 842
 #define FFSND_BeeBuzz 843
 #define FFSND_BeeBuzzDown 844
@@ -14,37 +14,38 @@
 #define FFSND_FireFizzle 853
 #define FFSND_FireLight 854
 #define FFSND_FlashShakeyKidRoar 855
-#define FFSND_Foresee 856
-#define FFSND_ForeseerClap 857
-#define FFSND_FrayedAlert 858
-#define FFSND_FriedEnd 859
-#define FFSND_FriedLoop 860
-#define FFSND_FriedStart 861
-#define FFSND_FrogShoot 862
-#define FFSND_GravediggerDig 863
-#define FFSND_MonsterYellFlash 864
-#define FFSND_MukCharge 865
-#define FFSND_MukChargeUp 866
-#define FFSND_MukLaugh 867
-#define FFSND_MukVomit 868
-#define FFSND_Plorp 869
-#define FFSND_Ricochet 870
-#define FFSND_RolyPolyRoll 871
-#define FFSND_SplashLarge 872
-#define FFSND_SplashLargePlonkless 873
-#define FFSND_TapEnd 874
-#define FFSND_TapHoney01 875
-#define FFSND_TapHoney02 876
-#define FFSND_TapLoop 877
-#define FFSND_TapStart 878
-#define FFSND_TapTap 879
-#define FFSND_WingFlap 880
-#define FFSND_Waterboom 881
-#define FFSND_Lighter 882
-#define FFSND_RubberRockBounce 883
-#define FFSND_GolemDoorClose 884
-#define FFSND_SmashHitWeak 885
-#define FFSND_ZoomAway 886
+#define FFSND_FlashZap 856
+#define FFSND_Foresee 857
+#define FFSND_ForeseerClap 858
+#define FFSND_FrayedAlert 859
+#define FFSND_FriedEnd 860
+#define FFSND_FriedLoop 861
+#define FFSND_FriedStart 862
+#define FFSND_FrogShoot 863
+#define FFSND_GolemDoorClose 864
+#define FFSND_GravediggerDig 865
+#define FFSND_Lighter 866
+#define FFSND_MonsterYellFlash 867
+#define FFSND_MukCharge 868
+#define FFSND_MukChargeUp 869
+#define FFSND_MukLaugh 870
+#define FFSND_MukVomit 871
+#define FFSND_Plorp 872
+#define FFSND_Ricochet 873
+#define FFSND_RolyPolyRoll 874
+#define FFSND_RubberRockBounce 875
+#define FFSND_SmashHitWeak 876
+#define FFSND_SplashLarge 877
+#define FFSND_SplashLargePlonkless 878
+#define FFSND_TapEnd 879
+#define FFSND_TapHoney01 880
+#define FFSND_TapHoney02 881
+#define FFSND_TapLoop 882
+#define FFSND_TapStart 883
+#define FFSND_TapTap 884
+#define FFSND_Waterboom 885
+#define FFSND_WingFlap 886
+#define FFSND_ZoomAway 887
 static const struct { int id; const char *files[7]; } FF_SND_X[] = {
     { 842, { "BalloonBlowingUpShort.wav" } },
     { 843, { "beebuzz.wav" } },
@@ -60,37 +61,38 @@ static const struct { int id; const char *files[7]; } FF_SND_X[] = {
     { 853, { "FireFizzle.wav" } },
     { 854, { "FireLight01.wav", "FireLight02.wav" } },
     { 855, { "ShakeyKidRoar0.wav", "ShakeyKidRoar1.wav", "ShakeyKidRoar2.wav" } },
-    { 856, { "Foresee.wav" } },
-    { 857, { "ForeseerClap.wav" } },
-    { 858, { "AlertShort.wav" } },
-    { 859, { "fire3.wav" } },
-    { 860, { "fire2.wav" } },
-    { 861, { "fire1.wav" } },
-    { 862, { "frogshoot2.wav" } },
-    { 863, { "gravedigger_dig.wav" } },
-    { 864, { "MonsterYellA0.wav" } },
-    { 865, { "DroolerCharge01.wav", "DroolerCharge02.wav" } },
-    { 866, { "DroolerChargeUp.wav" } },
-    { 867, { "DroolerLaugh.wav" } },
-    { 868, { "MukVomit01.wav", "MukVomit02.wav" } },
-    { 869, { "plorp_1.wav", "plorp_2.wav", "plorp_3.wav", "plorp_4.wav" } },
-    { 870, { "Rico01.wav", "Rico02.wav", "Rico03.wav", "Rico04.wav" } },
-    { 871, { "rolling.wav" } },
-    { 872, { "LargeSplash01.wav", "LargeSplash02.wav", "LargeSplash03.wav", "LargeSplash04.wav" } },
-    { 873, { "LargeSplash03.wav", "LargeSplash04.wav" } },
-    { 874, { "tap_close.wav" } },
-    { 875, { "MP01.wav" } },
-    { 876, { "MP02.wav" } },
-    { 877, { "tap_loop.wav" } },
-    { 878, { "tap_open1.wav" } },
-    { 879, { "tap_open2.wav" } },
-    { 880, { "WingFlap1.wav", "WingFlap2.wav" } },
-    { 881, { "waterboom.wav" } },
-    { 882, { "Lighter.wav" } },
-    { 883, { "rubberrock_01.wav", "rubberrock_02.wav", "rubberrock_03.wav" } },
-    { 884, { "golem_trapdoor_close0.wav", "golem_trapdoor_close1.wav" } },
-    { 885, { "SmashHitWeak.wav" } },
-    { 886, { "zoom_away.wav" } },
+    { 856, { "FlashZap01.wav", "FlashZap02.wav", "FlashZap03.wav" } },
+    { 857, { "Foresee.wav" } },
+    { 858, { "ForeseerClap.wav" } },
+    { 859, { "AlertShort.wav" } },
+    { 860, { "fire3.wav" } },
+    { 861, { "fire2.wav" } },
+    { 862, { "fire1.wav" } },
+    { 863, { "frogshoot2.wav" } },
+    { 864, { "golem_trapdoor_close0.wav", "golem_trapdoor_close1.wav" } },
+    { 865, { "gravedigger_dig.wav" } },
+    { 866, { "Lighter.wav" } },
+    { 867, { "MonsterYellA0.wav" } },
+    { 868, { "DroolerCharge01.wav", "DroolerCharge02.wav" } },
+    { 869, { "DroolerChargeUp.wav" } },
+    { 870, { "DroolerLaugh.wav" } },
+    { 871, { "MukVomit01.wav", "MukVomit02.wav" } },
+    { 872, { "plorp_1.wav", "plorp_2.wav", "plorp_3.wav", "plorp_4.wav" } },
+    { 873, { "Rico01.wav", "Rico02.wav", "Rico03.wav", "Rico04.wav" } },
+    { 874, { "rolling.wav" } },
+    { 875, { "rubberrock_01.wav", "rubberrock_02.wav", "rubberrock_03.wav" } },
+    { 876, { "SmashHitWeak.wav" } },
+    { 877, { "LargeSplash01.wav", "LargeSplash02.wav", "LargeSplash03.wav", "LargeSplash04.wav" } },
+    { 878, { "LargeSplash03.wav", "LargeSplash04.wav" } },
+    { 879, { "tap_close.wav" } },
+    { 880, { "MP01.wav" } },
+    { 881, { "MP02.wav" } },
+    { 882, { "tap_loop.wav" } },
+    { 883, { "tap_open1.wav" } },
+    { 884, { "tap_open2.wav" } },
+    { 885, { "waterboom.wav" } },
+    { 886, { "WingFlap1.wav", "WingFlap2.wav" } },
+    { 887, { "zoom_away.wav" } },
     { 0, { 0 } } };
 /* parts of the multi-part sounds: first id, count (ffsound_play picks one at random) */
 static const struct { int first, n; } FF_SND_PARTS[] = {
