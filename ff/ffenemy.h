@@ -48,13 +48,19 @@ static unsigned long ffl_room_key(void) {
     return k;                                                   /* Room+8 = the room's descriptor: one per room of a floor (eid_craft.c) */
 }
 static void ffl_room_desc(char *b, size_t n) {
-    if (!g_gw || !g_gh) { snprintf(b, n, "grid unknown"); return; }
+    if (!g_gw || !g_gh) {
+        int ew = -1, eh = -1; unsigned long r = g_room ? g_room() : 0;
+        if (r) { safe_copy(&ew, (const void *) (r + ROOM_W), 4); safe_copy(&eh, (const void *) (r + ROOM_H), 4); }
+        snprintf(b, n, "grid unknown (room object says %dx%d)", ew, eh); return;
+    }
     int open = 0, c0 = 999, c1 = -1, r0 = 999, r1 = -1;
     for (int r = 0; r < g_gh; r++) for (int c = 0; c < g_gw; c++) {
         if (g_cells[c + r * g_gw] >= g_wallv) continue;
         open++; if (c < c0) c0 = c; if (c > c1) c1 = c; if (r < r0) r0 = r; if (r > r1) r1 = r;
     }
-    snprintf(b, n, "grid %dx%d, %d non-wall tiles in cols %d..%d rows %d..%d", g_gw, g_gh, open, c0, c1, r0, r1);
+    int ew = -1, eh = -1; unsigned long r = g_room ? g_room() : 0;
+    if (r) { safe_copy(&ew, (const void *) (r + ROOM_W), 4); safe_copy(&eh, (const void *) (r + ROOM_H), 4); }
+    snprintf(b, n, "grid %dx%d, %d non-wall tiles in cols %d..%d rows %d..%d; room object now says %dx%d%s", g_gw, g_gh, open, c0, c1, r0, r1, ew, eh, (ew != g_gw || eh != g_gh) ? " (DIFFERENT: the port's table is stale)" : "");
 }
 #endif
 static void en_state_watch(en_t *s) {                          /* STATE: every change of a machine's / monster's state number */
@@ -1012,8 +1018,9 @@ static void en_probe(en_t *s, unsigned long e, const enemy_t *d, const float *pa
     float mx = p[0] - pa[0], my = p[1] - pa[1], real = vlen(mx, my), want = vlen(va[0], va[1]), eng = vlen(v[0], v[1]);
     float *pl = en_target(e); float dist = pl ? vlen(pl[0] - p[0], pl[1] - p[1]) : -1.0f;
     unsigned key = FFKEY(s->type, s->variant);
-    if (!s->born) { s->born = 1; snprintf(s->first_anim, sizeof s->first_anim, "%s", s->anim); }
-    if (s->age > 1 && vlen(pa[0] - s->lastp[0], pa[1] - s->lastp[1]) > 100.0f) {          /* TELEPORT: the AI set a position far from where the last tick ended */
+    int first = !s->born;                                       /* the first probe of a slot has no previous tick: its placement is not a jump */
+    if (first) { s->born = 1; snprintf(s->first_anim, sizeof s->first_anim, "%s", s->anim); }
+    if (!first && vlen(pa[0] - s->lastp[0], pa[1] - s->lastp[1]) > 100.0f) {          /* TELEPORT: the AI set a position far from where the last tick ended */
         char rd[110]; ffl_room_desc(rd, sizeof rd);
         FFLOG(FFC_TELEPORT, key, "%d.%d.%d asked to go from (%.0f,%.0f) to (%.0f,%.0f), the engine left it at (%.0f,%.0f); state %d anim '%s'; %s",
               s->type, s->variant, s->sub, s->lastp[0], s->lastp[1], pa[0], pa[1], p[0], p[1], s->state, s->anim, rd);
@@ -1021,7 +1028,7 @@ static void en_probe(en_t *s, unsigned long e, const enemy_t *d, const float *pa
     s->lastp[0] = p[0]; s->lastp[1] = p[1];
     if (want > 0.3f && (s->age == 3 || s->age % 90 == 0))
         FFLOG(FFC_SPEED, key, "%d.%d.%d age %d: AI asks %.2f px/tick, it moved %.2f, engine velocity %.2f, player %.0f px away, state %d anim '%s'", s->type, s->variant, s->sub, s->age, want, real, eng, dist, s->state, s->anim);
-    if (real > 3.0f && real > 1.5f * (want > 0.5f ? want : 0.5f)) {
+    if (!first && real > 3.0f && real > 1.5f * (want > 0.5f ? want : 0.5f)) {
         int ai_grew = s->lastva > 0.3f && want > 1.5f * s->lastva;
         FFLOG(FFC_SPEED_SPIKE, key, "%d.%d.%d moved %.2f px in one tick, the AI asked %.2f (last tick %.2f, %s), engine velocity %.2f, player %.0f px away, state %d anim '%s' age %d",
               s->type, s->variant, s->sub, real, want, s->lastva, ai_grew ? "the AI's own velocity grew" : "the AI did not ask for more: the engine moved it", eng, dist, s->state, s->anim, s->age);
@@ -1044,7 +1051,7 @@ static void en_probe(en_t *s, unsigned long e, const enemy_t *d, const float *pa
               ent_gcoll_ok() ? *(const int *) (e + OFF_ENT_GRIDCOLL) : -1, ent_coll_ok() ? *(const int *) (e + OFF_ENT_COLLCLASS) : -1, s->state, s->anim, rd);
     }
     /* AI_TARGET: with a player in the room it neither asks for nor makes any move for 90 ticks; and when it moves again, how far the player is */
-    if (pl && want < 0.05f && real < 0.05f) {
+    if (pl && s->type != 183 && s->type != 184 && want < 0.05f && real < 0.05f) {      /* 183/184 are the NPC pseudo-grids (locks, chains, totems): they never move, standing still is their job */
         s->still++;
         if (s->still == 90) {
             s->still_dist = dist;
@@ -1069,6 +1076,10 @@ static void en_probe(en_t *s, unsigned long e, const enemy_t *d, const float *pa
 static void en_post(en_t *s, unsigned long e, const enemy_t *d, const float *pa, const float *va, const float *vb) {
     float *p = fpos(e), *v = fvel(e), mx = p[0] - pa[0], my = p[1] - pa[1];
     int gc = ent_gcoll_ok() ? *(const int *) (e + OFF_ENT_GRIDCOLL) : -1, cc = ent_coll_ok() ? *(const int *) (e + OFF_ENT_COLLCLASS) : -1;
+#if ISAAC_DIAG
+    float lx = s->lastp[0], ly = s->lastp[1];                   /* where the previous tick ended, before the probe overwrites it */
+    en_probe(s, e, d, pa, va);                                  /* before the clamp below: what it measures is the engine's / the AI's move, not our own put-back */
+#endif
     /* a safety net only, the Lua has nothing like it: a monster that ends up well outside the room's walls (a bug, never a normal move) is put back */
     if (!d->free_move && g_gw) {
         float x = p[0], y = p[1]; en_clamp_room(&x, &y, -60.0f);
@@ -1076,13 +1087,10 @@ static void en_post(en_t *s, unsigned long e, const enemy_t *d, const float *pa,
 #if ISAAC_DIAG
             char rd[110]; ffl_room_desc(rd, sizeof rd);
             FFLOG(FFC_OUT_OF_ROOM, FFKEY(s->type, s->variant), "%d.%d.%d at (%.0f,%.0f) was far outside the room: put back at (%.0f,%.0f); it was at (%.0f,%.0f) after the AI, last tick ended at (%.0f,%.0f); state %d anim '%s' age %d; %s",
-                  s->type, s->variant, s->sub, p[0], p[1], x, y, pa[0], pa[1], s->lastp[0], s->lastp[1], s->state, s->anim, s->age, rd);
+                  s->type, s->variant, s->sub, p[0], p[1], x, y, pa[0], pa[1], lx, ly, s->state, s->anim, s->age, rd);
 #endif
             p[0] = x; p[1] = y; v[0] = 0; v[1] = 0; }
     }
-#if ISAAC_DIAG
-    en_probe(s, e, d, pa, va);
-#endif
     tel_t *t = tel_of(s->type, s->variant);
     if (t) {
         float want = vlen(va[0], va[1]); int moving = want > 0.3f;
