@@ -442,7 +442,10 @@ static int grid_direct(unsigned long room) {
         int c = i % wh[0], r = i / wh[0];
         if (c == 0 || r == 0 || c == wh[0] - 1 || r == wh[1] - 1) { border++; if (raw[i] >= 4) walls++; }
     }
-    if (walls * 100 < border * 70) return 0;                       /* the ring of walls must be there */
+    if (walls * 100 < border * 50) {                               /* the ring of walls must be there (50 %: doors and the cut-out of an L are not walls) */
+        FFLOG(FFC_ROOM, 0x6d0000u + (unsigned) (wh[0] * 64 + wh[1]), "grid_direct refused the room object's %dx%d table: only %d of its %d ring tiles are walls (value >= 4)", wh[0], wh[1], walls, border);
+        return 0;
+    }
     memcpy(g_cells, cells, (size_t) (wh[0] * wh[1])); g_gw = wh[0]; g_gh = wh[1]; g_wallv = 4; g_grid_at = room + ROOM_COLL; g_grid_stride = 4;
     return 1;
 }
@@ -474,8 +477,9 @@ static void grid_update(void) {
     g_grid_checked = t;
     unsigned long room = g_room ? g_room() : 0;
     if (!room) return;
-    if (g_gw && grid_direct(room)) return;
-    if (g_gw && grid_reread()) return;
+    if (grid_direct(room)) return;                                 /* the engine's own table, every time (it used to be tried only once a table existed) */
+    if (g_gw && g_grid_at == room + ROOM_COLL) { g_gw = g_gh = 0; g_grid_at = 0; }   /* it came from there and that room refuses it now: the OLD room's table is worse than none */
+    else if (g_gw && grid_reread()) return;                        /* one found by the search elsewhere: re-read where it was */
     if (t - g_grid_searched < 700) return;                         /* not more than a search every 0.7 s */
     g_grid_searched = t;
     int had = g_gw;
@@ -848,10 +852,23 @@ int ffminion_spawn(unsigned long player, int sub) {
 /* The player's frame: the double tap before the game's update, the fireballs after it, then ffheart's hit poll. ffheart's poll used to hang on this
  * same slot; with ours installed first it can no longer wrap it (a real run: "slot 4 holds ..., not code"), so it was left to the pickups and
  * hits were missed or seen late. It runs from here now. */
+static unsigned long g_room_seen;
+/* a new room (Room+8 is its descriptor): read its table now, not up to 100 ms later */
+static void fb_room_watch(void) {
+    unsigned long r = g_room ? g_room() : 0, k = 0;
+    if (r && safe_copy(&k, (const void *) (r + 8), 8) && k != g_room_seen) { g_room_seen = k; g_grid_checked = 0; }
+}
 static void fb_player_frame(unsigned long p, void (*orig)(unsigned long)) {
     fb_before_update(p);
     orig(p);
     fb_after_update(p);
+    /* EVERY frame, from the one hook that always runs. Until now grid_update() ran only inside a Fiend minion's steering and the machines /
+     * beggars / chests / locks (en_g9/g12/g13_tick) only inside an NPC update: in a room with no NPC and no minion the room table stayed that of
+     * an earlier room (log: "grid 28x16" while the engine said 15x9) and no machine, beggar, chest or lock ran at all - they stood still, a bomb
+     * never broke them. en_piles_tick() runs once per game frame whatever calls it. */
+    fb_room_watch();
+    grid_update();
+    en_piles_tick();
     grid_dump_tick();
     ffroom_tick();
     if (ffheart_poll) ffheart_poll();
@@ -926,6 +943,12 @@ static void fb_real_load(void *sprite, const char *path) {
     ((void (*)(void *, const void *, int)) (g_base + FN_SPRITE_LOAD))(sprite, str, 1);
     shim_str_dtor(str);
 }
+/* the Glass Chest's preview icons (ffen_g16.h): the engine's own Sprite, the way eid.c draws its icons */
+static void fb_pv_new(void *spr) { ((void (*)(void *)) (g_base + 0x89c16c))(spr); }
+static int fb_pv_load(void *spr, const char *anm2) { fb_real_load(spr, anm2); return *((const unsigned char *) spr + 0x149) != 0; }       /* the "loaded" flag */
+static void fb_pv_render(void *spr, const float *screen) { ((void (*)(void *, const void *, const void *, const void *)) (g_base + 0x89e4c0))(spr, screen, (const void *) (g_base + 0x95e7a0), (const void *) (g_base + 0x95e7a0)); }
+typedef struct { float x, y; } fb_v2;
+static void fb_pv_screen(const float *w, float *o) { fb_v2 r = ((fb_v2 (*)(const float *, int)) (g_base + 0x7f1fa0))(w, 0); o[0] = r.x; o[1] = r.y; }      /* world -> the canvas position the engine draws at */
 static int fb_real_trigger(int action, int controller) { return ((int (*)(unsigned long, int, int)) (g_base + FN_TRIGGERED))(0, action, controller) & 1; }
 static void take_slot(const char *name, unsigned long vt, int slot, unsigned long expect, void *mine, void **orig) {
     unsigned long *at = (unsigned long *) (g_base + vt + 8 * slot);
@@ -959,6 +982,7 @@ void shim_ffminion_install(unsigned char *base) {
     g_sheet = fb_real_sheet;
     g_load = fb_real_load;
     g_sheet_l = fb_real_sheet_l;
+    g_pv_new = fb_pv_new; g_pv_load = fb_pv_load; g_pv_render = fb_pv_render; g_pv_screen = fb_pv_screen;
     g_set_parent = (void (*)(unsigned long, unsigned long)) (g_base + 0x82bafc);
     g_add_poison = (void (*)(unsigned long, const void *, int, float)) (g_base + 0x82f294); g_add_charm = (void (*)(unsigned long, const void *, int)) (g_base + 0x82f5c4);
     g_add_conf = (void (*)(unsigned long, const void *, int, int)) (g_base + 0x82f914); g_add_fear = (void (*)(unsigned long, const void *, int)) (g_base + 0x82fc08);

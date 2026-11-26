@@ -24,7 +24,7 @@ typedef struct {
     float f[12]; int i[12]; unsigned long ref, ref2, ref3; int nocarry, hurt_block;
     float po[2]; int la_on, la_hasvel; float la_z, la_acc, la_h, la_vx, la_vy, la_col;   /* Entity.PositionOffset the AI asked for (added to the SpriteOffset) and the launched-enemy state (ferrium/misc/launchedStuff.lua) */
     float so[2]; int so_on;                                               /* the SpriteOffset the AI asked for, re-applied after the engine's update */
-    float lastva, lastp[2], dframe, still_dist, lastov; int still, blocked, mv_age, gap_done, st_seen, last_state, dprobe, ovs_n, srun, born; char first_anim[32], mv_anim[32];   /* the log probes (FFC_SPEED/STUCK/AI_TARGET/ANIM_GAP/DEATH/SPRITE_STATIC): the AI's last speed, where the last tick ended, how long it has stood still / been blocked */
+    float lastva, lastp[2], dframe, still_dist, lastov; int still, blocked, mv_age, gap_done, st_seen, last_state, dprobe, ovs_n, srun, born, gm_apply; char first_anim[32], mv_anim[32];   /* the log probes (FFC_SPEED/STUCK/AI_TARGET/ANIM_GAP/DEATH/SPRITE_STATIC): the AI's last speed, where the last tick ended, how long it has stood still / been blocked */
     int flaming; float lastreal; int stuck, driven;                                   /* en_sprite_sync: the engine's own frame last tick, how long it has not moved, and whether the port sets the frame itself */
 } en_t;
 static en_t g_en[EN_N];
@@ -806,6 +806,8 @@ static void en_proj_watch(unsigned long p, int kind);
 #include "ffen_g11.h"
 #include "ffen_g12.h"
 #include "ffen_g13.h"
+#include "ffen_g15.h"
+#include "ffen_g16.h"
 static const enemy_t *en_find_in(const enemy_t *t, int n, int type, int variant) {
     for (int i = 0; i < n; i++) if (t[i].type == type && t[i].variant == variant) return &t[i];
     return 0;
@@ -1219,6 +1221,7 @@ static void w_npc_update(unsigned long e) {
         } else {
             if (d->ai) d->ai(s, e);
             en_state_watch(s);
+            if (gs_is_grid(e)) gm_note(s, e);                       /* ffen_g15.h: the room's memory of this grid, kept current every tick */
         }
         if (s) { s->age++; pa[0] = fpos(e)[0]; pa[1] = fpos(e)[1]; va[0] = fvel(e)[0]; va[1] = fvel(e)[1]; }
         (void) x0; (void) y0;

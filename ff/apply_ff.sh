@@ -49,6 +49,7 @@ print("fiend folio modules applied")
 PY
 python3 "$HERE/ffwatch_patch.py" "$CPP/pack.c"
 python3 "$HERE/ffnoise_patch.py" "$CPP/loader.c"
+python3 "$HERE/ffdraw_patch.py" "$CPP/trace.c"
 # the console: Fiend Folio's monsters in the ENEMIES tab (ffenemies_table.h is written by tools/spawner_ff_enemies.py)
 cp "$HERE/ffenemies_table.h" "$CPP/ffenemies_table.h"
 python3 "$HERE/ffconsole_patch.py" "$CPP"

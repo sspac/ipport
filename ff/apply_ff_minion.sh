@@ -14,6 +14,7 @@ for h in "$HERE"/ffen_g*.h "$HERE"/ffenums.h "$HERE"/ffoffsets.h "$HERE"/ffsound
 cp "$HERE/ffsay.h" "$CPP/ffsay.h"
 [ -f "$HERE/ffsound.c" ] && cp "$HERE/ffsound.c" "$CPP/ffsound.c"      # its SOUND / SOUND_MISS lines
 python3 "$HERE/ffnoise_patch.py" "$CPP/loader.c"       # idempotent: the profiler's who/where lines and the haptics lines stay out of the report
+python3 "$HERE/ffdraw_patch.py" "$CPP/trace.c"       # idempotent: the Glass Chest preview hook
 cp "$HERE/ffchars.c" "$CPP/ffchars.c"
 python3 - <<'PY'
 C = 'port/app/src/main/cpp/'

@@ -279,6 +279,7 @@ static void en_g9_tick(void);
 static void en_g11_tick(void);
 static void en_g12_tick(void);
 static void en_g13_tick(void);
+static void en_g15_tick(void);
 static void en_burn_tick(void) {
     en_g6_tick();
     en_g7_tick();
@@ -286,6 +287,7 @@ static void en_burn_tick(void) {
     en_g11_tick();
     en_g12_tick();
     en_g13_tick();
+    en_g15_tick();
     for (int k = 0; k < FIRE_N; k++) { fire_t *f = &g_gfire[k]; if (!f->e) continue; if (!alive(f->e)) { f->e = 0; continue; } en_fire_step(f); }
     for (int k = 0; k < GP_N; k++) { gp_t *g = &g_gp[k]; if (!g->e) continue; if (!alive(g->e)) { g->e = 0; continue; } en_gunpowder_step(g); }
 }
